@@ -20,4 +20,3 @@ export const UNI_V3_ADDRESSES = {
 } as const
 
 export type UniAddresses = typeof UNI_V3_ADDRESSES
-
