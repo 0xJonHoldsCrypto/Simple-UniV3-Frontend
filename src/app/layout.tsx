@@ -6,7 +6,14 @@ import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import NetworkGuard from '@/components/NetworkGuard'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'                  
+import { useTokens } from '@/state/useTokens'              
+
+function InitTokens() {                                     
+  const setChain = useTokens(s => s.setChain)
+  useEffect(() => { setChain(hemi.id) }, [setChain])
+  return null
+}
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient())
@@ -16,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <WagmiProvider config={config}>
           <QueryClientProvider client={qc}>
             <NetworkGuard />
+            <InitTokens />                                   
             <Header />
             <main className="container mx-auto p-4 max-w-5xl">{children}</main>
             <Footer />
