@@ -1,7 +1,6 @@
 // wagmi v2 config for Hemi chain (inline chain + conditional WalletConnect)
 import { createConfig, http } from 'wagmi'
 import { coinbaseWallet, injected, walletConnect } from 'wagmi/connectors'
-
 // Inline Hemi chain (ETH native)
 export const hemi = {
   id: Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 0),
