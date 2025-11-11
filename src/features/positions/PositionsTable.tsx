@@ -27,7 +27,18 @@ export default function PositionsTable(){
       const n = Number(bal)
       const ids = await Promise.all([...Array(n)].map((_,i)=> client.readContract({ address: UNI_V3_ADDRESSES.positionManager as Address, abi: nfpmAbi, functionName:'tokenOfOwnerByIndex', args:[address, BigInt(i)] }) ))
       const pos = await Promise.all(ids.map((id)=> client.readContract({ address: UNI_V3_ADDRESSES.positionManager as Address, abi: nfpmAbi, functionName:'positions', args:[id as bigint] })))
-      if (active) setRows(pos.map((p,i)=> ({ id: String(ids[i]), token0: p[2], token1: p[3], fee: Number(p[4]), tl: Number(p[5]), tu: Number(p[6]), liq: String(p[7]) })))
+      if (active) setRows(pos.map((pp, i) => {
+        const p: any = pp as any
+        return {
+          id: String(ids[i]),
+          token0: p[2] as string,
+          token1: p[3] as string,
+          fee: Number(p[4]),
+          tl: Number(p[5]),
+          tu: Number(p[6]),
+          liq: String(p[7]),
+        }
+      }))
     }
     run(); return ()=>{ active=false }
   }, [client, address])

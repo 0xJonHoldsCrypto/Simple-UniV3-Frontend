@@ -1,4 +1,4 @@
-import { getContract, readContract, parseUnits, Address } from 'viem'
+import type { Address } from 'viem'
 import { UNI_V3_ADDRESSES } from '../addresses'
 
 export async function quoteExactInSingle({
@@ -14,7 +14,7 @@ export async function quoteExactInSingle({
   amountIn: string
   fee: number
 }) {
-  return readContract(client, {
+  return client.readContract({
     address: UNI_V3_ADDRESSES.quoterV2 as Address,
     abi: [
       {
