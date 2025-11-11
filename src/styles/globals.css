@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+body { @apply bg-neutral-950 text-neutral-100; }
+.btn { @apply inline-flex items-center justify-center px-4 py-2 rounded-2xl bg-brand text-white hover:opacity-90 disabled:opacity-60; }
+.container { @apply max-w-5xl px-4; }
