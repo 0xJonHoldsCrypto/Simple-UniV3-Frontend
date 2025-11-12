@@ -11,6 +11,7 @@ import { useQuote } from '@/hooks/useQuote'
 import { UNI_V3_ADDRESSES } from '@/lib/addresses'
 import { swapRouterAbi } from '@/lib/univ3/swap'
 import { requirePool } from '@/lib/univ3/pools'
+import { useAutoFeeTier } from '@/hooks/useAutoFeeTier'
 
 const erc20Abi = [
   { type:'function', name:'allowance', stateMutability:'view', inputs:[{name:'o',type:'address'},{name:'s',type:'address'}], outputs:[{type:'uint256'}] },
@@ -59,6 +60,23 @@ export default function SwapCard() {
     try { return parseUnits(amountIn || '0', decIn ?? 18) } catch { return 0n }
   }, [amountIn, decIn])
 
+// Auto-select fee tier based on best quoted output (or lowest-fee with liquidity)
+const { fee: autoFee, loading: autoFeeLoading } = useAutoFeeTier({
+  tokenIn,
+  tokenOut,
+  amountInHuman: amountIn,
+  decimalsIn: decIn ?? 18,
+  preferBestQuote: true, // set to false to simply choose lowest existing fee tier
+})
+
+// If hook suggests a fee different from current, adopt it
+useEffect(() => {
+  if (autoFee != null && autoFee !== fee) {
+    setFee(autoFee)
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [autoFee])
+  
   // 3) Quick preflight pool check to give immediate UX feedback (optional but helpful)
   useEffect(() => {
     let active = true
@@ -141,7 +159,15 @@ export default function SwapCard() {
       <div className="flex items-center justify-between text-sm">
         <SlippageControl value={slippageBps} onChange={setSlippageBps} />
         <div className="text-right opacity-80">
-          <div>Fee tier: {(fee/10000).toFixed(2)}%</div>
+          <div className="text-right opacity-80">
+  <div>
+    Fee tier: {(fee/10000).toFixed(2)}%
+    <span className="ml-2 text-xs opacity-70">
+      {autoFeeLoading ? '(auto…)' : '(auto)'}
+    </span>
+  </div>
+  {/* If you later want to let users override, add a small selector here */}
+</div>
           {/* You can replace this with a selector for 0.05% / 0.3% / 1% */}
         </div>
       </div>
