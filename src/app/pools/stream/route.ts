@@ -91,7 +91,11 @@ export async function GET() {
         const zero = '0x0000000000000000000000000000000000000000'
 
         // Probe in small chunks so we can stream results frequently
-        const chunk = async <T,>(arr:T[], n=200) => { for(let i=0;i<arr.length;i+=n) yield arr.slice(i,i+n) }
+        async function* chunk<T>(arr: T[], n = 200) {
+          for (let i = 0; i < arr.length; i += n) {
+            yield arr.slice(i, i + n)
+          }
+        }
         // @ts-ignore: using for-await
         for await (const batch of chunk(pairs, 100)) {
           // build calls

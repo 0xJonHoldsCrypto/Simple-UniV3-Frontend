@@ -3,6 +3,7 @@ import tokenlist from '@/lib/tokenlist.json'
 import { NextResponse } from 'next/server'
 import { createPublicClient, http, type Address } from 'viem'
 import { safeMulticall } from '@/lib/viem/safeMulticall'
+import { kvGet, kvSet } from '@/lib/kv'
 
 export const dynamic = 'force-dynamic' // ensure fresh in dev; cache via KV instead
 
@@ -42,35 +43,6 @@ const poolAbi = [
   { type: 'function', name: 'liquidity', stateMutability: 'view', inputs: [], outputs: [{ type:'uint128' }] },
   { type: 'function', name: 'tickSpacing', stateMutability: 'view', inputs: [], outputs: [{ type:'int24' }] },
 ] as const
-
-// --- Upstash KV helpers (REST) ---
-const KV_URL = process.env.KV_REST_API_URL
-const KV_TOKEN = process.env.KV_REST_API_TOKEN
-async function kvGet<T>(key: string): Promise<T | null> {
-  if (!KV_URL || !KV_TOKEN) return null
-  try {
-    const r = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${KV_TOKEN}` },
-      cache: 'no-store',
-    })
-    if (!r.ok) return null
-    const j = await r.json()
-    return j.result ? (JSON.parse(j.result) as T) : null
-  } catch { return null }
-}
-async function kvSet<T>(key: string, value: T, ttlSeconds = 3600) {
-  if (!KV_URL || !KV_TOKEN) return
-  try {
-    await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${KV_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ value: JSON.stringify(value), ex: ttlSeconds }),
-    })
-  } catch { /* ignore */ }
-}
 
 // viem multicall chunking helper with auto-fallback to per-call reads
 async function multicallChunked<T extends { address: Address; abi: any; functionName: any; args?: any[] }>(
