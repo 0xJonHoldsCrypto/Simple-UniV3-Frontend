@@ -31,7 +31,7 @@ export default function Header() {
     <header className="border-b border-neutral-800">
       <div className="container mx-auto p-4 flex items-center justify-between gap-4">
         <Link href="/" className="font-bold">
-          Hemi UniV3
+          DB UniV3
         </Link>
 
         <nav className="flex items-center gap-2 text-sm">
