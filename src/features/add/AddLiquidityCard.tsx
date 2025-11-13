@@ -117,15 +117,19 @@ export default function AddLiquidityCard() {
   const { data: balA } = useBalance({
     address,
     token: tokenA as Address,
-    enabled: !!address && !!tokenA,
-    watch: true,
+    query: {
+      enabled: !!address && !!tokenA,
+      refetchInterval: 10_000,
+    },
   })
 
   const { data: balB } = useBalance({
     address,
     token: tokenB as Address,
-    enabled: !!address && !!tokenB,
-    watch: true,
+    query: {
+      enabled: !!address && !!tokenB,
+      refetchInterval: 10_000,
+    },
   })
 
   function formatBalance(
