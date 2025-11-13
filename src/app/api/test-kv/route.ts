@@ -1,20 +1,26 @@
+// src/app/api/test-kv/route.ts
 import { kvGet, kvSet, redis } from '@/lib/kv'
-
-export const runtime = 'edge'
 
 export async function GET() {
   try {
     const key = 'hemi:test:' + Date.now()
+
+    // write a test value with 60s TTL
     await kvSet(key, { hello: 'world', at: Date.now() }, 60)
-    const value = await kvGet<typeof value>(key) // or <any>
+
+    // ✅ give the generic an explicit type instead of typeof value
+    const value = await kvGet<{ hello: string; at: number }>(key)
+
     const pong = await redis.ping()
-    return new Response(JSON.stringify({ ok: true, pong, key, value }), {
-      headers: { 'content-type': 'application/json' },
-    })
-  } catch (err: any) {
-    return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    })
+
+    return new Response(
+      JSON.stringify({ ok: true, pong, key, value }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  } catch (e: any) {
+    return new Response(
+      JSON.stringify({ ok: false, error: e?.message || 'kv test failed' }),
+      { status: 500, headers: { 'content-type': 'application/json' } },
+    )
   }
 }
