@@ -329,7 +329,7 @@ export default function SwapCard() {
 
   // --- Allowance helpers (ERC20 + Permit2 internal) ---
 
-  async function checkAllowance() {
+    async function checkAllowance() {
     if (!publicClient || !address || !tokenIn) {
       setHasAllowance(false)
       return
@@ -350,12 +350,13 @@ export default function SwapCard() {
         args: [address as Address, permit2],
       }) as Promise<bigint>
 
+      // 🔧 remove the explicit tuple cast here
       const permit2AllowancePromise = publicClient.readContract({
         address: permit2,
         abi: permit2Abi,
         functionName: 'allowance',
         args: [address as Address, tokenIn as Address, router],
-      }) as Promise<[bigint, bigint, bigint]>
+      })
 
       const [erc20Allowance, [p2Amount]] = await Promise.all([
         erc20AllowancePromise,
