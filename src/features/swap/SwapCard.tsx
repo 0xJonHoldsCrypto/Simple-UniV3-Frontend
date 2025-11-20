@@ -450,7 +450,6 @@ export default function SwapCard() {
   }
 
   // --- Preview Swap (simulate-only) ---
-
   async function previewSwap() {
     if (!walletClient || !address || !tokenIn || !tokenOut) return
     if (!publicClient) return
@@ -474,7 +473,6 @@ export default function SwapCard() {
       : ((UNI_V3_ADDRESSES.swapRouter as Address))
 
     const amountOutMinimum = minOut ?? 0n
-
     const path = encodeV3Path(route.tokens, route.fees)
 
     const input = encodeAbiParameters(
@@ -489,7 +487,19 @@ export default function SwapCard() {
 
     try {
       setSimulatingPreview(true)
-      const { request } = await publicClient.simulateContract({
+
+      // 1) Simulate to catch reverts & surface good errors
+      await publicClient.simulateContract({
+        address: routerAddr,
+        abi: universalRouterAbi,
+        functionName: 'execute',
+        args: [commands, inputs, deadline],
+        account: address as Address,
+        value: 0n,
+      })
+
+      // 2) Get an actual gas estimate using estimateContractGas
+      const gas = await publicClient.estimateContractGas({
         address: routerAddr,
         abi: universalRouterAbi,
         functionName: 'execute',
@@ -499,8 +509,8 @@ export default function SwapCard() {
       })
 
       setLastSimulation({
-        gasEstimate: request.gas,
-        value: request.value ?? 0n,
+        gasEstimate: gas,
+        value: 0n,
       })
     } catch (e: any) {
       console.error('Preview simulation failed', e)
