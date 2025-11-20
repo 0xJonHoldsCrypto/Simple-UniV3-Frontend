@@ -7,7 +7,7 @@ import {
   encodeAbiParameters,
   parseAbiParameters,
 } from 'viem'
-import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
+import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
 
 import TokenInput from '@/components/TokenInput'
 import SlippageControl from '@/components/SlippageControl'
@@ -117,7 +117,7 @@ export default function SwapCard() {
   console.log('UNI_V3_ADDRESSES (browser)', UNI_V3_ADDRESSES)
   const { address } = useAccount()
   const publicClient = usePublicClient()
-  const { data: walletClient } = useWalletClient()
+  const { writeContractAsync } = useWriteContract()
   const { tokens, byAddr } = useTokens()
 
   // form state
@@ -390,7 +390,7 @@ export default function SwapCard() {
 
   // Approve button: ensure ERC20 + Permit2 internal allowance
   async function ensureAllowance() {
-    if (!walletClient || !publicClient || !address || !tokenIn) return
+    if (!publicClient || !address || !tokenIn) return
 
     const permit2 = UNI_V3_ADDRESSES.permit2 as Address
     const router = (UNI_V3_ADDRESSES as any).universalRouter
@@ -410,7 +410,7 @@ export default function SwapCard() {
 
       if (erc20Allowance < amountInWei) {
         const maxUint256 = (1n << 256n) - 1n
-        const hash = await walletClient.writeContract({
+        const hash = await writeContractAsync({
           address: tokenIn,
           abi: erc20Abi,
           functionName: 'approve',
@@ -433,7 +433,7 @@ export default function SwapCard() {
       const now = Math.floor(Date.now() / 1000) // number (current time in seconds)
       const expiration = now + fiveYears // number
 
-      const hash2 = await walletClient.writeContract({
+      const hash2 = await writeContractAsync({
         address: permit2,
         abi: permit2Abi,
         functionName: 'approve',
@@ -453,7 +453,7 @@ export default function SwapCard() {
 
   // --- Preview Swap (simulate-only) ---
   async function previewSwap() {
-    if (!walletClient || !address || !tokenIn || !tokenOut) return
+    if (!address || !tokenIn || !tokenOut) return
     if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
     if (!route) return
@@ -532,16 +532,15 @@ export default function SwapCard() {
   // 6) Swap (requires prior approval + a route)
   async function onSwap() {
     console.log('SWAP GUARDS', {
-    walletClient,
-    address,
-    tokenIn,
-    tokenOut,
-    publicClient,
-    amountOut,
-    route,
-    hasAllowance,
-  })
-    if (!walletClient || !address || !tokenIn || !tokenOut) return
+      address,
+      tokenIn,
+      tokenOut,
+      publicClient,
+      amountOut,
+      route,
+      hasAllowance,
+    })
+    if (!address || !tokenIn || !tokenOut) return
     if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
     if (!route) return
@@ -602,7 +601,13 @@ export default function SwapCard() {
         value: request.value ?? 0n,
       })
 
-      const hash = await walletClient.writeContract(request)
+      const hash = await writeContractAsync({
+        address: routerAddr,
+        abi: universalRouterAbi,
+        functionName: 'execute',
+        args: [commands, inputs, deadline],
+        value: 0n,
+      })
 
       console.log('Universal Router swap tx sent', hash)
     } catch (e: any) {
