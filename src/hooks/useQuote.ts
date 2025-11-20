@@ -2,6 +2,7 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
 import type { Address } from 'viem'
+import { formatUnits } from 'viem'
 import { usePublicClient } from 'wagmi'
 import { useTokens } from '@/state/useTokens'
 import { quoteExactInSingle } from '@/lib/univ3/quotes'
@@ -12,12 +13,16 @@ export function useQuote({
   amountInHuman,
   fee,
   slippageBps,
+  pathTokens,
+  pathFees,
 }: {
   tokenIn?: Address
   tokenOut?: Address
   amountInHuman: string
   fee: number
   slippageBps: number
+  pathTokens?: Address[]
+  pathFees?: number[]
 }) {
   const client = usePublicClient()
   const { byAddr } = useTokens()
@@ -52,16 +57,55 @@ export function useQuote({
 
         setLoading(true)
 
-        const out = await quoteExactInSingle(client, {
-          tokenIn,
-          tokenOut,
-          fee,
-          amountInHuman,
-          decimalsIn: decIn,
-        })
+        let finalOut: bigint
 
-        if (!active) return
-        setAmountOut(out)
+        // If a multi-hop path is provided and valid, quote hop-by-hop
+        if (
+          pathTokens &&
+          pathFees &&
+          pathTokens.length >= 2 &&
+          pathFees.length === pathTokens.length - 1
+        ) {
+          let currentAmountHuman = amountInHuman
+
+          for (let i = 0; i < pathTokens.length - 1; i++) {
+            const hopIn = pathTokens[i]!
+            const hopOut = pathTokens[i + 1]!
+            const hopFee = pathFees[i]!
+
+            const hopDecIn =
+              byAddr.get(hopIn.toLowerCase())?.decimals ?? 18
+            const hopDecOut =
+              byAddr.get(hopOut.toLowerCase())?.decimals ?? 18
+
+            const hopOutAmount = await quoteExactInSingle(client, {
+              tokenIn: hopIn,
+              tokenOut: hopOut,
+              fee: hopFee,
+              amountInHuman: currentAmountHuman,
+              decimalsIn: hopDecIn,
+            })
+
+            // Prepare input for next hop as human-readable string
+            currentAmountHuman = formatUnits(hopOutAmount, hopDecOut)
+            finalOut = hopOutAmount
+          }
+
+          if (!active) return
+          setAmountOut(finalOut!)
+        } else {
+          // Fallback: single pool quote
+          const out = await quoteExactInSingle(client, {
+            tokenIn,
+            tokenOut,
+            fee,
+            amountInHuman,
+            decimalsIn: decIn,
+          })
+
+          if (!active) return
+          setAmountOut(out)
+        }
       } catch (e: any) {
         if (!active) return
         const msg = e?.shortMessage || e?.message || 'Quote failed'
@@ -76,7 +120,7 @@ export function useQuote({
     return () => {
       active = false
     }
-  }, [client, tokenIn, tokenOut, amountInHuman, fee, decIn])
+  }, [client, tokenIn, tokenOut, amountInHuman, fee, decIn, pathTokens, pathFees])
 
   const minOut = useMemo(() => {
     if (!amountOut) return 0n

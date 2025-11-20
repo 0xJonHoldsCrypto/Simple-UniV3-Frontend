@@ -1,7 +1,12 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
-import type { Address } from 'viem'
-import { parseUnits, formatUnits, encodeAbiParameters, parseAbiParameters, type Hex } from 'viem'
+import type { Address, Hex } from 'viem'
+import {
+  parseUnits,
+  formatUnits,
+  encodeAbiParameters,
+  parseAbiParameters,
+} from 'viem'
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
 
 import TokenInput from '@/components/TokenInput'
@@ -9,7 +14,6 @@ import SlippageControl from '@/components/SlippageControl'
 import { useTokens } from '@/state/useTokens'
 import { useQuote } from '@/hooks/useQuote'
 import { UNI_V3_ADDRESSES } from '@/lib/addresses'
-import { swapRouterAbi } from '@/lib/univ3/swap'
 import { requirePool } from '@/lib/univ3/pools'
 
 const erc20Abi = [
@@ -88,9 +92,25 @@ const permit2Abi = [
 
 const V3_SWAP_EXACT_IN = '0x00' as const
 
-function encodeV3Path(tokenIn: Address, tokenOut: Address, fee: number): Hex {
-  const feeHex = fee.toString(16).padStart(6, '0')
-  return (`0x${tokenIn.slice(2)}${feeHex}${tokenOut.slice(2)}`) as Hex
+// Multi-hop capable path encoder: tokens[0..n], fees[0..n-1]
+function encodeV3Path(tokens: Address[], fees: number[]): Hex {
+  if (tokens.length < 2 || fees.length !== tokens.length - 1) {
+    throw new Error('Invalid V3 path: token/fee length mismatch')
+  }
+
+  let path = tokens[0].slice(2)
+  for (let i = 0; i < fees.length; i++) {
+    const feeHex = fees[i].toString(16).padStart(6, '0')
+    path += feeHex + tokens[i + 1].slice(2)
+  }
+
+  return (`0x${path}`) as Hex
+}
+
+type Route = {
+  tokens: Address[]
+  fees: number[]
+  viaWeth: boolean
 }
 
 export default function SwapCard() {
@@ -107,14 +127,38 @@ export default function SwapCard() {
   const [slippageBps, setSlippageBps] = useState(
     Number(process.env.NEXT_PUBLIC_DEFAULT_SLIPPAGE_BPS ?? 50),
   )
-  const [poolErr, setPoolErr] = useState<string | null>(null)
 
-  // NEW: balance state for tokenIn
+  // routing / pool state
+  const [poolErr, setPoolErr] = useState<string | null>(null)
+  const [route, setRoute] = useState<Route | null>(null)
+  const [routing, setRouting] = useState(false)
+
+  // balance state for tokenIn
   const [balanceIn, setBalanceIn] = useState<bigint | null>(null)
+
+  // approval / permit2 state
+  const [hasAllowance, setHasAllowance] = useState(false)
+  const [checkingAllowance, setCheckingAllowance] = useState(false)
+  const [approving, setApproving] = useState(false)
+
+  // simulation preview state
+  const [lastSimulation, setLastSimulation] = useState<{
+    gasEstimate?: bigint
+    value?: bigint
+  } | null>(null)
+  const [simulatingPreview, setSimulatingPreview] = useState(false)
 
   // metadata for tokens
   const tIn = tokenIn ? byAddr.get(tokenIn.toLowerCase()) : undefined
   const tOut = tokenOut ? byAddr.get(tokenOut.toLowerCase()) : undefined
+
+  const wethToken = useMemo(
+    () =>
+      tokens.find((t) => t.symbol.toLowerCase() === 'weth') ??
+      tokens.find((t) => t.symbol.toLowerCase() === 'wrapped ether'),
+    [tokens],
+  )
+  const wethAddress = wethToken?.address as Address | undefined
 
   // 1) Choose sane defaults once tokens load
   useEffect(() => {
@@ -132,49 +176,109 @@ export default function SwapCard() {
     }
   }, [tokens, tokenIn, tokenOut])
 
-  // 2) Quote (uses parseUnits internally and checks pool existence)
-  const {
-    amountOut,
-    minOut,
-    decIn,
-    loading: quoting,
-    error: quoteErr,
-  } = useQuote({
-    tokenIn,
-    tokenOut,
-    amountInHuman: amountIn,
-    fee,
-    slippageBps,
-  })
-
-  // amountIn in wei with correct decimals (safe)
+  // 2) amountIn in wei
   const amountInWei = useMemo<bigint>(() => {
     try {
-      return parseUnits(amountIn || '0', decIn ?? 18)
+      return parseUnits(amountIn || '0', tIn?.decimals ?? 18)
     } catch {
       return 0n
     }
-  }, [amountIn, decIn])
+  }, [amountIn, tIn?.decimals])
 
-  // 3) Quick preflight pool check to give immediate UX feedback
+  // 3) Route finding: direct first, then via WETH
   useEffect(() => {
     let active = true
-    async function run() {
+
+    async function findRoute() {
       setPoolErr(null)
-      if (!publicClient || !tokenIn || !tokenOut) return
+      setRoute(null)
+
+      if (
+        !publicClient ||
+        !tokenIn ||
+        !tokenOut ||
+        tokenIn === tokenOut ||
+        fee <= 0
+      ) {
+        return
+      }
+
       try {
-        await requirePool(publicClient, tokenIn, tokenOut, fee)
+        setRouting(true)
+
+        // 1) Try direct pool
+        try {
+          await requirePool(publicClient, tokenIn, tokenOut, fee)
+          if (!active) return
+          setRoute({
+            tokens: [tokenIn, tokenOut],
+            fees: [fee],
+            viaWeth: false,
+          })
+          return
+        } catch {
+          // ignore, try via WETH
+        }
+
+        // 2) Try via WETH
+        if (!wethAddress || tokenIn === wethAddress || tokenOut === wethAddress) {
+          if (!active) return
+          setPoolErr('No direct pool for this pair at the selected fee.')
+          return
+        }
+
+        // tokenIn -> WETH
+        await requirePool(publicClient, tokenIn, wethAddress, fee)
+        // WETH -> tokenOut
+        await requirePool(publicClient, wethAddress, tokenOut, fee)
+
+        if (!active) return
+
+        setRoute({
+          tokens: [tokenIn, wethAddress, tokenOut],
+          fees: [fee, fee],
+          viaWeth: true,
+        })
       } catch (e: any) {
-        if (active) setPoolErr(e?.message || 'Pool not found for selected fee')
+        if (!active) return
+        console.error('Routing error', e)
+        setPoolErr(e?.message || 'No route found for this pair.')
+      } finally {
+        if (active) setRouting(false)
       }
     }
-    run()
+
+    findRoute()
+
     return () => {
       active = false
     }
-  }, [publicClient, tokenIn, tokenOut, fee])
+  }, [publicClient, tokenIn, tokenOut, fee, wethAddress])
 
-  // 4) NEW: fetch tokenIn balance
+  // 4) Quote using the resolved route
+  const effectiveTokenIn = tokenIn
+  const effectiveTokenOut = useMemo(
+    () => (route ? route.tokens[route.tokens.length - 1] : tokenOut),
+    [route, tokenOut],
+  )
+
+  const {
+    amountOut,
+    minOut,
+    loading: quoting,
+    error: quoteErr,
+  } = useQuote({
+    tokenIn: effectiveTokenIn,
+    tokenOut: effectiveTokenOut,
+    amountInHuman: amountIn,
+    fee,
+    slippageBps,
+    // These may be ignored by current useQuote until you wire it up.
+    pathTokens: route?.tokens,
+    pathFees: route?.fees,
+  })
+
+  // 5) fetch tokenIn balance
   useEffect(() => {
     let active = true
     async function run() {
@@ -220,11 +324,69 @@ export default function SwapCard() {
     const human = Number(
       formatUnits(ninetyNinePercent, dec),
     )
-    // keep it sane; 6 decimals should be plenty
     setAmountIn(human.toFixed(6).replace(/\.?0+$/, ''))
   }
 
-  // 5) Approve if necessary
+  // --- Allowance helpers (ERC20 + Permit2 internal) ---
+
+  async function checkAllowance() {
+    if (!publicClient || !address || !tokenIn) {
+      setHasAllowance(false)
+      return
+    }
+
+    const permit2 = UNI_V3_ADDRESSES.permit2 as Address
+    const router = (UNI_V3_ADDRESSES as any).universalRouter
+      ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
+      : ((UNI_V3_ADDRESSES.swapRouter as Address))
+
+    try {
+      setCheckingAllowance(true)
+
+      const erc20AllowancePromise = publicClient.readContract({
+        address: tokenIn,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [address as Address, permit2],
+      }) as Promise<bigint>
+
+      const permit2AllowancePromise = publicClient.readContract({
+        address: permit2,
+        abi: permit2Abi,
+        functionName: 'allowance',
+        args: [address as Address, tokenIn as Address, router],
+      }) as Promise<[bigint, bigint, bigint]>
+
+      const [erc20Allowance, [p2Amount]] = await Promise.all([
+        erc20AllowancePromise,
+        permit2AllowancePromise,
+      ])
+
+      const enough =
+        amountInWei > 0n &&
+        erc20Allowance >= amountInWei &&
+        p2Amount >= amountInWei
+
+      setHasAllowance(enough)
+    } catch (err) {
+      console.error('checkAllowance failed', err)
+      setHasAllowance(false)
+    } finally {
+      setCheckingAllowance(false)
+    }
+  }
+
+  // auto-check allowance when relevant inputs change
+  useEffect(() => {
+    if (!publicClient || !address || !tokenIn || amountInWei === 0n) {
+      setHasAllowance(false)
+      return
+    }
+    checkAllowance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicClient, address, tokenIn, amountInWei])
+
+  // Approve button: ensure ERC20 + Permit2 internal allowance
   async function ensureAllowance() {
     if (!walletClient || !publicClient || !address || !tokenIn) return
 
@@ -233,26 +395,29 @@ export default function SwapCard() {
       ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
       : ((UNI_V3_ADDRESSES.swapRouter as Address))
 
-    // --- Step 1: Ensure ERC20 allowance from user -> Permit2 ---
-    const erc20Allowance = (await publicClient.readContract({
-      address: tokenIn,
-      abi: erc20Abi,
-      functionName: 'allowance',
-      args: [address as Address, permit2],
-    })) as bigint
+    try {
+      setApproving(true)
 
-    if (erc20Allowance < amountInWei) {
-      const maxUint256 = (1n << 256n) - 1n
-      const hash = await walletClient.writeContract({
+      // Step 1: ERC20 allowance user -> Permit2
+      const erc20Allowance = (await publicClient.readContract({
         address: tokenIn,
         abi: erc20Abi,
-        functionName: 'approve',
-        args: [permit2, maxUint256],
-      })
-      await publicClient.waitForTransactionReceipt({ hash })
-    }
+        functionName: 'allowance',
+        args: [address as Address, permit2],
+      })) as bigint
 
-    // --- Step 2: Ensure Permit2 internal allowance (user, token, router) ---
+      if (erc20Allowance < amountInWei) {
+        const maxUint256 = (1n << 256n) - 1n
+        const hash = await walletClient.writeContract({
+          address: tokenIn,
+          abi: erc20Abi,
+          functionName: 'approve',
+          args: [permit2, maxUint256],
+        })
+        await publicClient.waitForTransactionReceipt({ hash })
+      }
+
+          // Step 2: Permit2 internal allowance (user, token, router)
     const [p2Amount] = (await publicClient.readContract({
       address: permit2,
       abi: permit2Abi,
@@ -262,9 +427,9 @@ export default function SwapCard() {
 
     if (p2Amount < amountInWei) {
       const maxUint160 = (1n << 160n) - 1n
-      const fiveYears = 60n * 60n * 24n * 365n * 5n
-      const now = BigInt(Math.floor(Date.now() / 1000))
-      const expiration = now + fiveYears
+      const fiveYears = 60 * 60 * 24 * 365 * 5 // number (5 years in seconds)
+      const now = Math.floor(Date.now() / 1000) // number (current time in seconds)
+      const expiration = now + fiveYears // number
 
       const hash2 = await walletClient.writeContract({
         address: permit2,
@@ -274,29 +439,109 @@ export default function SwapCard() {
       })
       await publicClient.waitForTransactionReceipt({ hash: hash2 })
     }
+
+    await checkAllowance()
+    } catch (err) {
+      console.error('ensureAllowance failed', err)
+      throw err
+    } finally {
+      setApproving(false)
+    }
   }
 
-  // 6) Swap (disabled unless we have a valid quote)
-  async function onSwap() {
+  // --- Preview Swap (simulate-only) ---
+
+  async function previewSwap() {
     if (!walletClient || !address || !tokenIn || !tokenOut) return
     if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
+    if (!route) return
 
-    // Ensure the router has enough allowance first
-    await ensureAllowance()
+    if (!hasAllowance) {
+      if (typeof window !== 'undefined') {
+        window.alert('Please approve token spending first to preview.')
+      }
+      return
+    }
 
     const deadline = BigInt(
       Math.floor(Date.now() / 1000) +
         Number(process.env.NEXT_PUBLIC_TX_DEADLINE_MIN ?? 20) * 60,
     )
 
-    const router = (UNI_V3_ADDRESSES as any).universalRouter
+    const routerAddr = (UNI_V3_ADDRESSES as any).universalRouter
       ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
       : ((UNI_V3_ADDRESSES.swapRouter as Address))
 
     const amountOutMinimum = minOut ?? 0n
 
-    const path = encodeV3Path(tokenIn as Address, tokenOut as Address, fee)
+    const path = encodeV3Path(route.tokens, route.fees)
+
+    const input = encodeAbiParameters(
+      parseAbiParameters(
+        'address recipient, uint256 amountIn, uint256 amountOutMinimum, bytes path, bool payerIsUser',
+      ),
+      [address as Address, amountInWei, amountOutMinimum, path, true],
+    )
+
+    const commands = V3_SWAP_EXACT_IN as Hex
+    const inputs = [input] as Hex[]
+
+    try {
+      setSimulatingPreview(true)
+      const { request } = await publicClient.simulateContract({
+        address: routerAddr,
+        abi: universalRouterAbi,
+        functionName: 'execute',
+        args: [commands, inputs, deadline],
+        account: address as Address,
+        value: 0n,
+      })
+
+      setLastSimulation({
+        gasEstimate: request.gas,
+        value: request.value ?? 0n,
+      })
+    } catch (e: any) {
+      console.error('Preview simulation failed', e)
+      setLastSimulation(null)
+      const msg =
+        e?.shortMessage ??
+        e?.message ??
+        (typeof e === 'string' ? e : 'Preview failed')
+      if (typeof window !== 'undefined') {
+        window.alert(msg)
+      }
+    } finally {
+      setSimulatingPreview(false)
+    }
+  }
+
+  // 6) Swap (requires prior approval + a route)
+  async function onSwap() {
+    if (!walletClient || !address || !tokenIn || !tokenOut) return
+    if (!publicClient) return
+    if (!amountOut || amountOut === 0n) return
+    if (!route) return
+
+    if (!hasAllowance) {
+      if (typeof window !== 'undefined') {
+        window.alert('Please approve token spending first.')
+      }
+      return
+    }
+
+    const deadline = BigInt(
+      Math.floor(Date.now() / 1000) +
+        Number(process.env.NEXT_PUBLIC_TX_DEADLINE_MIN ?? 20) * 60,
+    )
+
+    const routerAddr = (UNI_V3_ADDRESSES as any).universalRouter
+      ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
+      : ((UNI_V3_ADDRESSES.swapRouter as Address))
+
+    const amountOutMinimum = minOut ?? 0n
+    const path = encodeV3Path(route.tokens, route.fees)
 
     const input = encodeAbiParameters(
       parseAbiParameters(
@@ -310,14 +555,14 @@ export default function SwapCard() {
 
     try {
       console.log('Simulating Universal Router swap', {
-        router,
+        routerAddr,
         commands,
         inputs,
         deadline: deadline.toString(),
       })
 
-      await publicClient.simulateContract({
-        address: router,
+      const { request } = await publicClient.simulateContract({
+        address: routerAddr,
         abi: universalRouterAbi,
         functionName: 'execute',
         args: [commands, inputs, deadline],
@@ -325,23 +570,32 @@ export default function SwapCard() {
         value: 0n,
       })
 
-      console.log('Simulation succeeded, sending Universal Router swap tx')
+      console.log(
+        'Simulation succeeded, sending Universal Router swap tx',
+        request,
+      )
 
-      const hash = await walletClient.writeContract({
-        address: router,
-        abi: universalRouterAbi,
-        functionName: 'execute',
-        args: [commands, inputs, deadline],
-        value: 0n,
+      setLastSimulation({
+        gasEstimate: request.gas,
+        value: request.value ?? 0n,
       })
+
+      const hash = await walletClient.writeContract(request)
 
       console.log('Universal Router swap tx sent', hash)
     } catch (e: any) {
       console.error('Swap failed (simulation or send)', e)
-      const msg =
+      let msg =
         e?.shortMessage ??
         e?.message ??
         (typeof e === 'string' ? e : 'Swap failed')
+
+      const raw = String(e)
+      if (raw.includes('0xf96fb071')) {
+        msg =
+          'Swap failed due to insufficient Permit2 allowance. Please click "Approve" again or reduce the amount.'
+      }
+
       if (typeof window !== 'undefined') {
         window.alert(msg)
       }
@@ -350,19 +604,39 @@ export default function SwapCard() {
 
   const disableSwap =
     quoting ||
+    routing ||
     !!quoteErr ||
     !!poolErr ||
     !amountOut ||
     !tokenIn ||
     !tokenOut ||
     amountInWei === 0n ||
-    !address
+    !address ||
+    !route
+
+  const disableApprove =
+    !address ||
+    !tokenIn ||
+    amountInWei === 0n ||
+    approving ||
+    checkingAllowance ||
+    hasAllowance
+
+  const disablePreview =
+    !address ||
+    !tokenIn ||
+    !tokenOut ||
+    amountInWei === 0n ||
+    simulatingPreview ||
+    !hasAllowance ||
+    !route
 
   // nicer button label
   let buttonLabel = 'Swap'
   if (!address) buttonLabel = 'Connect wallet'
   else if (!tokenIn || !tokenOut) buttonLabel = 'Select tokens'
   else if (!amountIn || Number(amountIn) <= 0) buttonLabel = 'Enter amount'
+  else if (routing) buttonLabel = 'Finding route…'
   else if (quoting) buttonLabel = 'Quoting…'
   else if (!amountOut) buttonLabel = 'No quote'
 
@@ -405,14 +679,19 @@ export default function SwapCard() {
         <SlippageControl value={slippageBps} onChange={setSlippageBps} />
         <div className="text-right opacity-80">
           <div>Fee tier: {(fee / 10000).toFixed(2)}%</div>
-          {/* Auto-fee tier logic can adjust `fee` in the future */}
+          {route?.viaWeth && (
+            <div className="text-xs opacity-60">
+              Route: {tIn?.symbol} → WETH → {tOut?.symbol}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="text-sm opacity-80">
-        {quoting && <span>Fetching quote…</span>}
+        {routing && <span>Finding best route…</span>}
+        {!routing && quoting && <span>Fetching quote…</span>}
 
-        {!quoting && amountOut !== null && tOut && (
+        {!routing && !quoting && amountOut !== null && tOut && (
           <span>
             Quote:{' '}
             {Number(
@@ -422,31 +701,62 @@ export default function SwapCard() {
           </span>
         )}
 
-        {!quoting && amountOut === null && !quoteErr && (
+        {!routing && !quoting && amountOut === null && !quoteErr && (
           <span>No quote yet</span>
         )}
       </div>
 
       {amountOut !== null && tOut && (
-        <div className="text-xs opacity-60">
-          Minimum received (after slippage):{' '}
-          {Number(
-            formatUnits(minOut, tOut.decimals ?? 18),
-          ).toFixed(4)}{' '}
-          {tOut.symbol}
+        <div className="text-xs opacity-60 space-y-1">
+          <div>
+            Minimum received (after slippage):{' '}
+            {Number(
+              formatUnits(minOut ?? 0n, tOut.decimals ?? 18),
+            ).toFixed(4)}{' '}
+            {tOut.symbol}
+          </div>
+          <div className="flex items-center justify-between">
+            <span>
+              {lastSimulation?.gasEstimate
+                ? `Estimated gas: ${lastSimulation.gasEstimate.toString()}`
+                : 'No gas estimate yet'}
+            </span>
+            <button
+              type="button"
+              onClick={previewSwap}
+              disabled={disablePreview}
+              className="text-[11px] underline disabled:opacity-40"
+            >
+              {simulatingPreview ? 'Simulating…' : 'Preview swap'}
+            </button>
+          </div>
         </div>
       )}
 
       {poolErr && <div className="text-xs text-amber-400">{poolErr}</div>}
       {quoteErr && <div className="text-xs text-red-400">{quoteErr}</div>}
 
-      <button
-        className="btn w-full"
-        onClick={onSwap}
-        disabled={disableSwap}
-      >
-        {buttonLabel}
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="btn flex-1"
+          onClick={ensureAllowance}
+          disabled={disableApprove}
+        >
+          {approving
+            ? 'Approving…'
+            : hasAllowance
+              ? 'Approved'
+              : 'Approve'}
+        </button>
+        <button
+          className="btn flex-1"
+          onClick={onSwap}
+          disabled={disableSwap}
+        >
+          {buttonLabel}
+        </button>
+      </div>
     </div>
   )
 }
