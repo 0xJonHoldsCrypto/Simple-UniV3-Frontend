@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
 import type { Address } from 'viem'
-import { parseUnits, formatUnits } from 'viem'
+import { parseUnits, formatUnits, encodeAbiParameters, parseAbiParameters, type Hex } from 'viem'
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
 
 import TokenInput from '@/components/TokenInput'
@@ -41,6 +41,57 @@ const erc20Abi = [
     outputs: [{ type: 'uint256' }],
   },
 ] as const
+
+const universalRouterAbi = [
+  {
+    type: 'function',
+    name: 'execute',
+    stateMutability: 'payable',
+    inputs: [
+      { name: 'commands', type: 'bytes' },
+      { name: 'inputs', type: 'bytes[]' },
+      { name: 'deadline', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const
+
+const permit2Abi = [
+  {
+    type: 'function',
+    name: 'allowance',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'token', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [
+      { name: 'amount', type: 'uint160' },
+      { name: 'expiration', type: 'uint48' },
+      { name: 'nonce', type: 'uint48' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint160' },
+      { name: 'expiration', type: 'uint48' },
+    ],
+    outputs: [],
+  },
+] as const
+
+const V3_SWAP_EXACT_IN = '0x00' as const
+
+function encodeV3Path(tokenIn: Address, tokenOut: Address, fee: number): Hex {
+  const feeHex = fee.toString(16).padStart(6, '0')
+  return (`0x${tokenIn.slice(2)}${feeHex}${tokenOut.slice(2)}`) as Hex
+}
 
 export default function SwapCard() {
   const { address } = useAccount()
@@ -176,49 +227,125 @@ export default function SwapCard() {
   // 5) Approve if necessary
   async function ensureAllowance() {
     if (!walletClient || !publicClient || !address || !tokenIn) return
-    const allowance = (await publicClient.readContract({
+
+    const permit2 = UNI_V3_ADDRESSES.permit2 as Address
+    const router = (UNI_V3_ADDRESSES as any).universalRouter
+      ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
+      : ((UNI_V3_ADDRESSES.swapRouter as Address))
+
+    // --- Step 1: Ensure ERC20 allowance from user -> Permit2 ---
+    const erc20Allowance = (await publicClient.readContract({
       address: tokenIn,
       abi: erc20Abi,
       functionName: 'allowance',
-      args: [address as Address, UNI_V3_ADDRESSES.swapRouter as Address],
+      args: [address as Address, permit2],
     })) as bigint
-    if (allowance >= amountInWei) return
-    await walletClient.writeContract({
-      address: tokenIn,
-      abi: erc20Abi,
-      functionName: 'approve',
-      args: [UNI_V3_ADDRESSES.swapRouter as Address, 2n ** 256n - 1n],
-    })
+
+    if (erc20Allowance < amountInWei) {
+      const maxUint256 = (1n << 256n) - 1n
+      const hash = await walletClient.writeContract({
+        address: tokenIn,
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [permit2, maxUint256],
+      })
+      await publicClient.waitForTransactionReceipt({ hash })
+    }
+
+    // --- Step 2: Ensure Permit2 internal allowance (user, token, router) ---
+    const [p2Amount] = (await publicClient.readContract({
+      address: permit2,
+      abi: permit2Abi,
+      functionName: 'allowance',
+      args: [address as Address, tokenIn as Address, router],
+    })) as unknown as [bigint, bigint, bigint]
+
+    if (p2Amount < amountInWei) {
+      const maxUint160 = (1n << 160n) - 1n
+      const fiveYears = 60n * 60n * 24n * 365n * 5n
+      const now = BigInt(Math.floor(Date.now() / 1000))
+      const expiration = now + fiveYears
+
+      const hash2 = await walletClient.writeContract({
+        address: permit2,
+        abi: permit2Abi,
+        functionName: 'approve',
+        args: [tokenIn as Address, router, maxUint160, expiration],
+      })
+      await publicClient.waitForTransactionReceipt({ hash: hash2 })
+    }
   }
 
   // 6) Swap (disabled unless we have a valid quote)
   async function onSwap() {
     if (!walletClient || !address || !tokenIn || !tokenOut) return
+    if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
+
+    // Ensure the router has enough allowance first
     await ensureAllowance()
+
     const deadline = BigInt(
       Math.floor(Date.now() / 1000) +
         Number(process.env.NEXT_PUBLIC_TX_DEADLINE_MIN ?? 20) * 60,
     )
 
-    await walletClient.writeContract({
-      address: UNI_V3_ADDRESSES.swapRouter as Address,
-      abi: swapRouterAbi,
-      functionName: 'exactInputSingle',
-      args: [
-        {
-          tokenIn: tokenIn as Address,
-          tokenOut: tokenOut as Address,
-          fee,
-          recipient: address as Address,
-          deadline,
-          amountIn: amountInWei,
-          amountOutMinimum: minOut ?? 0n,
-          sqrtPriceLimitX96: 0n,
-        },
-      ],
-      value: 0n,
-    })
+    const router = (UNI_V3_ADDRESSES as any).universalRouter
+      ? ((UNI_V3_ADDRESSES as any).universalRouter as Address)
+      : ((UNI_V3_ADDRESSES.swapRouter as Address))
+
+    const amountOutMinimum = minOut ?? 0n
+
+    const path = encodeV3Path(tokenIn as Address, tokenOut as Address, fee)
+
+    const input = encodeAbiParameters(
+      parseAbiParameters(
+        'address recipient, uint256 amountIn, uint256 amountOutMinimum, bytes path, bool payerIsUser',
+      ),
+      [address as Address, amountInWei, amountOutMinimum, path, true],
+    )
+
+    const commands = V3_SWAP_EXACT_IN as Hex
+    const inputs = [input] as Hex[]
+
+    try {
+      console.log('Simulating Universal Router swap', {
+        router,
+        commands,
+        inputs,
+        deadline: deadline.toString(),
+      })
+
+      await publicClient.simulateContract({
+        address: router,
+        abi: universalRouterAbi,
+        functionName: 'execute',
+        args: [commands, inputs, deadline],
+        account: address as Address,
+        value: 0n,
+      })
+
+      console.log('Simulation succeeded, sending Universal Router swap tx')
+
+      const hash = await walletClient.writeContract({
+        address: router,
+        abi: universalRouterAbi,
+        functionName: 'execute',
+        args: [commands, inputs, deadline],
+        value: 0n,
+      })
+
+      console.log('Universal Router swap tx sent', hash)
+    } catch (e: any) {
+      console.error('Swap failed (simulation or send)', e)
+      const msg =
+        e?.shortMessage ??
+        e?.message ??
+        (typeof e === 'string' ? e : 'Swap failed')
+      if (typeof window !== 'undefined') {
+        window.alert(msg)
+      }
+    }
   }
 
   const disableSwap =
