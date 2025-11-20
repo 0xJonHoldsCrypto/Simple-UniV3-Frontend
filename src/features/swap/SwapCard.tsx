@@ -114,6 +114,7 @@ type Route = {
 }
 
 export default function SwapCard() {
+  console.log('UNI_V3_ADDRESSES (browser)', UNI_V3_ADDRESSES)
   const { address } = useAccount()
   const publicClient = usePublicClient()
   const { data: walletClient } = useWalletClient()
@@ -530,6 +531,16 @@ export default function SwapCard() {
 
   // 6) Swap (requires prior approval + a route)
   async function onSwap() {
+    console.log('SWAP GUARDS', {
+    walletClient,
+    address,
+    tokenIn,
+    tokenOut,
+    publicClient,
+    amountOut,
+    route,
+    hasAllowance,
+  })
     if (!walletClient || !address || !tokenIn || !tokenOut) return
     if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
