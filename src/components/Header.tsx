@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import ConnectButton from '@/components/ConnectButton'
 import { usePathname } from 'next/navigation'
+import NetworkSwitcher from '@/components/NetworkSwitcher'
 //import { ConnectButton } from '@rainbow-me/rainbowkit' // optional if added
 
 function NavLink({
@@ -41,7 +42,10 @@ export default function Header() {
           <NavLink href="/remove" label="Remove" />
           <NavLink href="/positions" label="Positions" />
         </nav>
-         <ConnectButton />
+        <div className="flex items-center gap-3">
+          <NetworkSwitcher />
+          <ConnectButton />
+        </div>
       </div>
     </header>
   )

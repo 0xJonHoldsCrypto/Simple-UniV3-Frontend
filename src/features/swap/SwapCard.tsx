@@ -148,6 +148,10 @@ export default function SwapCard() {
     value?: bigint
   } | null>(null)
   const [simulatingPreview, setSimulatingPreview] = useState(false)
+  const [status, setStatus] = useState<{
+    type: 'info' | 'error' | 'success'
+    message: string
+  } | null>(null)
 
   // metadata for tokens
   const tIn = tokenIn ? byAddr.get(tokenIn.toLowerCase()) : undefined
@@ -160,6 +164,22 @@ export default function SwapCard() {
     [tokens],
   )
   const wethAddress = wethToken?.address as Address | undefined
+
+  // Human-readable route label
+  const routeLabel = useMemo(() => {
+    if (!route || !route.tokens.length) return null
+
+    try {
+      return route.tokens
+        .map((addr) => {
+          const meta = byAddr.get(addr.toLowerCase())
+          return meta?.symbol ?? `${addr.slice(0, 6)}…`
+        })
+        .join(' → ')
+    } catch {
+      return null
+    }
+  }, [route, byAddr])
 
   // 1) Choose sane defaults once tokens load
   useEffect(() => {
@@ -316,6 +336,31 @@ export default function SwapCard() {
     }
   }, [balanceIn, tIn])
 
+  // Execution price info
+  const priceInfo = useMemo(() => {
+    if (!amountOut || amountOut === 0n) return null
+    if (!tIn || !tOut) return null
+    if (amountInWei === 0n) return null
+
+    try {
+      const inFloat = Number(
+        formatUnits(amountInWei, tIn.decimals ?? 18),
+      )
+      const outFloat = Number(
+        formatUnits(amountOut, tOut.decimals ?? 18),
+      )
+      if (!isFinite(inFloat) || !isFinite(outFloat)) return null
+      if (inFloat === 0 || outFloat === 0) return null
+
+      return {
+        outPerIn: outFloat / inFloat,
+        inPerOut: inFloat / outFloat,
+      }
+    } catch {
+      return null
+    }
+  }, [amountOut, amountInWei, tIn, tOut])
+
   const canUseMax = balanceIn !== null && balanceIn > 0n && !!tIn
 
   function handleMaxClick() {
@@ -326,6 +371,12 @@ export default function SwapCard() {
       formatUnits(ninetyNinePercent, dec),
     )
     setAmountIn(human.toFixed(6).replace(/\.?0+$/, ''))
+  }
+
+  function handleFlipTokens() {
+    if (!tokenIn || !tokenOut) return
+    setTokenIn(tokenOut)
+    setTokenOut(tokenIn)
   }
 
   // --- Allowance helpers (ERC20 + Permit2 internal) ---
@@ -419,32 +470,43 @@ export default function SwapCard() {
         await publicClient.waitForTransactionReceipt({ hash })
       }
 
-          // Step 2: Permit2 internal allowance (user, token, router)
-    const [p2Amount] = (await publicClient.readContract({
-      address: permit2,
-      abi: permit2Abi,
-      functionName: 'allowance',
-      args: [address as Address, tokenIn as Address, router],
-    })) as unknown as [bigint, bigint, bigint]
-
-    if (p2Amount < amountInWei) {
-      const maxUint160 = (1n << 160n) - 1n
-      const fiveYears = 60 * 60 * 24 * 365 * 5 // number (5 years in seconds)
-      const now = Math.floor(Date.now() / 1000) // number (current time in seconds)
-      const expiration = now + fiveYears // number
-
-      const hash2 = await walletClient.writeContract({
+      // Step 2: Permit2 internal allowance (user, token, router)
+      const [p2Amount] = (await publicClient.readContract({
         address: permit2,
         abi: permit2Abi,
-        functionName: 'approve',
-        args: [tokenIn as Address, router, maxUint160, expiration],
-      })
-      await publicClient.waitForTransactionReceipt({ hash: hash2 })
-    }
+        functionName: 'allowance',
+        args: [address as Address, tokenIn as Address, router],
+      })) as unknown as [bigint, bigint, bigint]
 
-    await checkAllowance()
+      if (p2Amount < amountInWei) {
+        const maxUint160 = (1n << 160n) - 1n
+        const fiveYears = 60 * 60 * 24 * 365 * 5 // number (5 years in seconds)
+        const now = Math.floor(Date.now() / 1000) // number (current time in seconds)
+        const expiration = now + fiveYears // number
+
+        const hash2 = await walletClient.writeContract({
+          address: permit2,
+          abi: permit2Abi,
+          functionName: 'approve',
+          args: [tokenIn as Address, router, maxUint160, expiration],
+        })
+        await publicClient.waitForTransactionReceipt({ hash: hash2 })
+      }
+
+      await checkAllowance()
+      setStatus({
+        type: 'success',
+        message: 'Token spending approved via Permit2.',
+      })
     } catch (err) {
       console.error('ensureAllowance failed', err)
+      setStatus({
+        type: 'error',
+        message:
+          err?.shortMessage ??
+          err?.message ??
+          (typeof err === 'string' ? err : 'Approve failed'),
+      })
       throw err
     } finally {
       setApproving(false)
@@ -459,9 +521,10 @@ export default function SwapCard() {
     if (!route) return
 
     if (!hasAllowance) {
-      if (typeof window !== 'undefined') {
-        window.alert('Please approve token spending first to preview.')
-      }
+      setStatus({
+        type: 'info',
+        message: 'Please approve token spending first to preview.',
+      })
       return
     }
 
@@ -517,13 +580,13 @@ export default function SwapCard() {
     } catch (e: any) {
       console.error('Preview simulation failed', e)
       setLastSimulation(null)
-      const msg =
-        e?.shortMessage ??
-        e?.message ??
-        (typeof e === 'string' ? e : 'Preview failed')
-      if (typeof window !== 'undefined') {
-        window.alert(msg)
-      }
+      setStatus({
+        type: 'error',
+        message:
+          e?.shortMessage ??
+          e?.message ??
+          (typeof e === 'string' ? e : 'Preview failed'),
+      })
     } finally {
       setSimulatingPreview(false)
     }
@@ -531,16 +594,16 @@ export default function SwapCard() {
 
   // 6) Swap (requires prior approval + a route)
   async function onSwap() {
-    
     if (!walletClient || !address || !tokenIn || !tokenOut) return
     if (!publicClient) return
     if (!amountOut || amountOut === 0n) return
     if (!route) return
 
     if (!hasAllowance) {
-      if (typeof window !== 'undefined') {
-        window.alert('Please approve token spending first.')
-      }
+      setStatus({
+        type: 'info',
+        message: 'Please approve token spending first.',
+      })
       return
     }
 
@@ -595,6 +658,10 @@ export default function SwapCard() {
 
       const hash = await walletClient.writeContract(request)
 
+      setStatus({
+        type: 'success',
+        message: `Swap submitted. Tx hash: ${hash}`,
+      })
       console.log('Universal Router swap tx sent', hash)
     } catch (e: any) {
       console.error('Swap failed (simulation or send)', e)
@@ -609,9 +676,10 @@ export default function SwapCard() {
           'Swap failed due to insufficient Permit2 allowance. Please click "Approve" again or reduce the amount.'
       }
 
-      if (typeof window !== 'undefined') {
-        window.alert(msg)
-      }
+      setStatus({
+        type: 'error',
+        message: msg,
+      })
     }
   }
 
@@ -657,10 +725,26 @@ export default function SwapCard() {
     <div className="max-w-lg mx-auto rounded-2xl p-4 bg-neutral-900 shadow space-y-4">
       <div className="text-xl font-semibold">Swap</div>
 
-      <TokenInput label="Token In" value={tokenIn} onChange={setTokenIn} />
-      <TokenInput label="Token Out" value={tokenOut} onChange={setTokenOut} />
+      <div className="bg-neutral-800 rounded-xl p-3">
+        <TokenInput label="Token In" value={tokenIn} onChange={setTokenIn} />
+      </div>
 
-      <div className="space-y-1">
+      <div className="flex justify-center">
+        <button
+          type="button"
+          onClick={handleFlipTokens}
+          className="inline-flex items-center justify-center rounded-full bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 w-9 h-9 -my-2 shadow"
+          aria-label="Flip tokens"
+        >
+          ⇅
+        </button>
+      </div>
+
+      <div className="bg-neutral-800 rounded-xl p-3">
+        <TokenInput label="Token Out" value={tokenOut} onChange={setTokenOut} />
+      </div>
+
+      <div className="space-y-1 bg-neutral-800 rounded-xl p-3">
         <div className="flex items-center justify-between text-xs opacity-70">
           <span>Amount In</span>
           {tIn && (
@@ -681,7 +765,7 @@ export default function SwapCard() {
           )}
         </div>
         <input
-          className="w-full bg-neutral-800 p-2 rounded"
+          className="w-full bg-neutral-900 p-2 rounded-lg"
           placeholder="0.0"
           value={amountIn}
           onChange={(e) => setAmountIn(e.target.value)}
@@ -690,45 +774,97 @@ export default function SwapCard() {
 
       <div className="flex items-center justify-between text-sm">
         <SlippageControl value={slippageBps} onChange={setSlippageBps} />
-        <div className="text-right opacity-80">
+        <div className="text-right opacity-80 text-xs">
           <div>Fee tier: {(fee / 10000).toFixed(2)}%</div>
-          {route?.viaWeth && (
-            <div className="text-xs opacity-60">
-              Route: {tIn?.symbol} → WETH → {tOut?.symbol}
-            </div>
-          )}
         </div>
       </div>
 
-      <div className="text-sm opacity-80">
-        {routing && <span>Finding best route…</span>}
-        {!routing && quoting && <span>Fetching quote…</span>}
+      <div className="text-sm">
+        {routing && <span className="opacity-80">Finding best route…</span>}
+        {!routing && quoting && <span className="opacity-80">Fetching quote…</span>}
 
-        {!routing && !quoting && amountOut !== null && tOut && (
-          <span>
-            Quote:{' '}
-            {Number(
-              formatUnits(amountOut, tOut.decimals ?? 18),
-            ).toFixed(4)}{' '}
-            {tOut.symbol}
-          </span>
-        )}
+        {!routing && !quoting && (
+          <div className="mt-2 bg-neutral-800 rounded-xl p-3 text-center space-y-2">
+            {/* Route chips with logos and fee tiers */}
+            {route && route.tokens.length > 0 && (
+              <div className="text-xs opacity-80 flex flex-col items-center gap-1">
+                <span className="uppercase tracking-wide text-[10px] text-neutral-400">
+                  Route
+                </span>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {route.tokens.map((addr, idx) => {
+                    const meta = byAddr.get(addr.toLowerCase())
+                    const symbol = meta?.symbol ?? `${addr.slice(0, 6)}…`
+                    const logo = (meta as any)?.logoURI as string | undefined
+                    const isLast = idx === route.tokens.length - 1
+                    const hopFee = !isLast ? route.fees[idx] : undefined
 
-        {!routing && !quoting && amountOut === null && !quoteErr && (
-          <span>No quote yet</span>
+                    return (
+                      <div key={addr} className="flex items-center gap-1">
+                        {logo && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={logo}
+                            alt={symbol}
+                            className="w-4 h-4 rounded-full"
+                          />
+                        )}
+                        <span>{symbol}</span>
+                        {!isLast && (
+                          <span className="mx-1 text-[10px] text-neutral-500 flex items-center gap-1">
+                            <span>{((hopFee ?? 0) / 10000).toFixed(2)}%</span>
+                            <span>→</span>
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Prominent quote */}
+            {amountOut !== null && tOut && (
+              <div className="mt-1">
+                <div className="text-xs font-semibold text-orange-400 uppercase tracking-wide">
+                  Quote
+                </div>
+                <div className="text-2xl font-semibold text-orange-300">
+                  {Number(
+                    formatUnits(amountOut, tOut.decimals ?? 18),
+                  ).toFixed(4)}{' '}
+                  {tOut.symbol}
+                </div>
+              </div>
+            )}
+
+            {/* Price info under the main quote */}
+            {priceInfo && tIn && tOut && (
+              <div className="mt-1 text-xs opacity-60">
+                1 {tIn.symbol} ≈ {priceInfo.outPerIn.toFixed(4)} {tOut.symbol}
+                <span className="mx-1">·</span>
+                1 {tOut.symbol} ≈ {priceInfo.inPerOut.toFixed(4)} {tIn.symbol}
+              </div>
+            )}
+
+            {/* Fallback when there is no quote yet */}
+            {amountOut === null && !quoteErr && (
+              <span className="opacity-80 text-xs">No quote yet</span>
+            )}
+          </div>
         )}
       </div>
 
       {amountOut !== null && tOut && (
-        <div className="text-xs opacity-60 space-y-1">
-          <div>
+        <div className="text-xs space-y-2">
+          <div className="text-center text-orange-400 font-semibold">
             Minimum received (after slippage):{' '}
             {Number(
               formatUnits(minOut ?? 0n, tOut.decimals ?? 18),
             ).toFixed(4)}{' '}
             {tOut.symbol}
           </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between opacity-60">
             <span>
               {lastSimulation?.gasEstimate
                 ? `Estimated gas: ${lastSimulation.gasEstimate.toString()}`
@@ -749,6 +885,20 @@ export default function SwapCard() {
       {poolErr && <div className="text-xs text-amber-400">{poolErr}</div>}
       {quoteErr && <div className="text-xs text-red-400">{quoteErr}</div>}
 
+      {status && (
+        <div
+          className={[
+            'text-xs text-center px-3 py-2 rounded-lg',
+            status.type === 'error'
+              ? 'bg-red-900/40 text-red-300'
+              : status.type === 'success'
+                ? 'bg-emerald-900/40 text-emerald-300'
+                : 'bg-neutral-800 text-neutral-200',
+          ].join(' ')}
+        >
+          {status.message}
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           type="button"

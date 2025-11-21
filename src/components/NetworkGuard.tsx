@@ -7,6 +7,7 @@ export default function NetworkGuard() {
   const chainId = useChainId()
   const { switchChain } = useSwitchChain()
   useEffect(() => {
+    if (!chainId) return
     if (chainId && hemi.id && chainId !== hemi.id) {
       try { switchChain({ chainId: hemi.id }) } catch {}
     }
