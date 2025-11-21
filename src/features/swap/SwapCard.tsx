@@ -630,7 +630,7 @@ export default function SwapCard() {
         type: 'success',
         message: 'Token spending approved via Permit2.',
       })
-    } catch (err) {
+    } catch (err: any) {
       console.error('ensureAllowance failed', err)
       setStatus({
         type: 'error',
