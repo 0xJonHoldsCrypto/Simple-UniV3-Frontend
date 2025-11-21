@@ -31,8 +31,12 @@ export default function Header() {
   return (
     <header className="border-b border-neutral-800">
       <div className="container mx-auto p-4 flex items-center justify-between gap-4">
-        <Link href="/" className="font-bold">
-          DB UniV3
+        <Link href="/" className="flex items-center gap-2 font-bold text-lg">
+          <img
+            src="/swap3-logo.svg"
+            alt=".SWAP3"
+            className="h-9 w-auto"
+          />
         </Link>
 
         <nav className="flex items-center gap-2 text-sm">

@@ -14,7 +14,7 @@ import SlippageControl from '@/components/SlippageControl'
 import { useTokens } from '@/state/useTokens'
 import { useQuote } from '@/hooks/useQuote'
 import { UNI_V3_ADDRESSES } from '@/lib/addresses'
-import { requirePool } from '@/lib/univ3/pools'
+
 
 const erc20Abi = [
   {
@@ -113,6 +113,34 @@ type Route = {
   viaWeth: boolean
 }
 
+const FEE_CANDIDATES = [500, 3000, 10000] as const
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address
+
+const factoryAbi = [
+  {
+    type: 'function',
+    name: 'getPool',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenA', type: 'address' },
+      { name: 'tokenB', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+    ],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+] as const
+
+const poolAbi = [
+  {
+    type: 'function',
+    name: 'liquidity',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: 'liquidity', type: 'uint128' }],
+  },
+] as const
+
 export default function SwapCard() {
   console.log('UNI_V3_ADDRESSES (browser)', UNI_V3_ADDRESSES)
   const { address } = useAccount()
@@ -206,60 +234,164 @@ export default function SwapCard() {
     }
   }, [amountIn, tIn?.decimals])
 
-  // 3) Route finding: direct first, then via WETH
+  // 3) Route finding: choose best fee by on-chain liquidity (direct, then via WETH)
   useEffect(() => {
     let active = true
 
     async function findRoute() {
       setPoolErr(null)
       setRoute(null)
+      setStatus(null)
 
-      if (
-        !publicClient ||
-        !tokenIn ||
-        !tokenOut ||
-        tokenIn === tokenOut ||
-        fee <= 0
-      ) {
+      if (!publicClient || !tokenIn || !tokenOut || tokenIn === tokenOut) {
         return
+      }
+
+      const factory = UNI_V3_ADDRESSES.factory as Address
+
+      // Helper: pick the best direct pool by liquidity
+      const getBestDirectPool = async () => {
+        let bestFee: number | null = null
+        let bestLiquidity: bigint = 0n
+
+        for (const feeCandidate of FEE_CANDIDATES) {
+          try {
+            const [tokenA, tokenB] =
+              tokenIn.toLowerCase() < tokenOut.toLowerCase()
+                ? [tokenIn, tokenOut]
+                : [tokenOut, tokenIn]
+
+            const poolAddr = (await publicClient.readContract({
+              address: factory,
+              abi: factoryAbi,
+              functionName: 'getPool',
+              args: [tokenA, tokenB, feeCandidate],
+            })) as Address
+
+            if (!poolAddr || poolAddr === ZERO_ADDRESS) continue
+
+            const liquidity = (await publicClient.readContract({
+              address: poolAddr,
+              abi: poolAbi,
+              functionName: 'liquidity',
+            })) as bigint
+
+            if (liquidity > bestLiquidity) {
+              bestLiquidity = liquidity
+              bestFee = feeCandidate
+            }
+          } catch {
+            // ignore and try next fee
+          }
+        }
+
+        if (bestFee === null || bestLiquidity === 0n) return null
+        return { bestFee, bestLiquidity }
+      }
+
+      // Helper: pick best via-WETH route (same fee on both hops)
+      const getBestViaWethRoute = async () => {
+        if (!wethAddress || tokenIn === wethAddress || tokenOut === wethAddress) {
+          return null
+        }
+
+        let bestFee: number | null = null
+        let bestLiquidity: bigint = 0n
+
+        for (const feeCandidate of FEE_CANDIDATES) {
+          try {
+            const [a0, a1] =
+              tokenIn.toLowerCase() < wethAddress.toLowerCase()
+                ? [tokenIn, wethAddress]
+                : [wethAddress, tokenIn]
+            const [b0, b1] =
+              wethAddress.toLowerCase() < tokenOut.toLowerCase()
+                ? [wethAddress, tokenOut]
+                : [tokenOut, wethAddress]
+
+            const pool1 = (await publicClient.readContract({
+              address: factory,
+              abi: factoryAbi,
+              functionName: 'getPool',
+              args: [a0, a1, feeCandidate],
+            })) as Address
+            const pool2 = (await publicClient.readContract({
+              address: factory,
+              abi: factoryAbi,
+              functionName: 'getPool',
+              args: [b0, b1, feeCandidate],
+            })) as Address
+
+            if (
+              !pool1 ||
+              pool1 === ZERO_ADDRESS ||
+              !pool2 ||
+              pool2 === ZERO_ADDRESS
+            ) {
+              continue
+            }
+
+            const [liq1, liq2] = (await Promise.all([
+              publicClient.readContract({
+                address: pool1,
+                abi: poolAbi,
+                functionName: 'liquidity',
+              }) as Promise<bigint>,
+              publicClient.readContract({
+                address: pool2,
+                abi: poolAbi,
+                functionName: 'liquidity',
+              }) as Promise<bigint>,
+            ])) as [bigint, bigint]
+
+            const combined = liq1 < liq2 ? liq1 : liq2 // bottleneck liquidity
+
+            if (combined > bestLiquidity) {
+              bestLiquidity = combined
+              bestFee = feeCandidate
+            }
+          } catch {
+            // ignore and try next fee
+          }
+        }
+
+        if (bestFee === null || bestLiquidity === 0n) return null
+        return { bestFee, bestLiquidity, weth: wethAddress as Address }
       }
 
       try {
         setRouting(true)
 
-        // 1) Try direct pool
-        try {
-          await requirePool(publicClient, tokenIn, tokenOut, fee)
-          if (!active) return
-          setRoute({
-            tokens: [tokenIn, tokenOut],
-            fees: [fee],
-            viaWeth: false,
-          })
-          return
-        } catch {
-          // ignore, try via WETH
-        }
-
-        // 2) Try via WETH
-        if (!wethAddress || tokenIn === wethAddress || tokenOut === wethAddress) {
-          if (!active) return
-          setPoolErr('No direct pool for this pair at the selected fee.')
-          return
-        }
-
-        // tokenIn -> WETH
-        await requirePool(publicClient, tokenIn, wethAddress, fee)
-        // WETH -> tokenOut
-        await requirePool(publicClient, wethAddress, tokenOut, fee)
-
+        // 1. Try best direct pool by liquidity
+        const direct = await getBestDirectPool()
         if (!active) return
 
-        setRoute({
-          tokens: [tokenIn, wethAddress, tokenOut],
-          fees: [fee, fee],
-          viaWeth: true,
-        })
+        if (direct) {
+          setRoute({
+            tokens: [tokenIn, tokenOut],
+            fees: [direct.bestFee],
+            viaWeth: false,
+          })
+          setFee(direct.bestFee)
+          return
+        }
+
+        // 2. Fallback to best via-WETH route
+        const viaWeth = await getBestViaWethRoute()
+        if (!active) return
+
+        if (viaWeth) {
+          setRoute({
+            tokens: [tokenIn, viaWeth.weth, tokenOut],
+            fees: [viaWeth.bestFee, viaWeth.bestFee],
+            viaWeth: true,
+          })
+          setFee(viaWeth.bestFee)
+          return
+        }
+
+        // 3. No route at our supported fee tiers
+        setPoolErr('No route found for this pair at supported fee tiers.')
       } catch (e: any) {
         if (!active) return
         console.error('Routing error', e)
@@ -274,7 +406,7 @@ export default function SwapCard() {
     return () => {
       active = false
     }
-  }, [publicClient, tokenIn, tokenOut, fee, wethAddress])
+  }, [publicClient, tokenIn, tokenOut, wethAddress])
 
   // 4) Quote using the resolved route
   const effectiveTokenIn = tokenIn
@@ -775,7 +907,10 @@ export default function SwapCard() {
       <div className="flex items-center justify-between text-sm">
         <SlippageControl value={slippageBps} onChange={setSlippageBps} />
         <div className="text-right opacity-80 text-xs">
-          <div>Fee tier: {(fee / 10000).toFixed(2)}%</div>
+          <div>
+            Fee tier:{' '}
+            {(((route?.fees?.[0] ?? fee) / 10000).toFixed(2))}%
+          </div>
         </div>
       </div>
 

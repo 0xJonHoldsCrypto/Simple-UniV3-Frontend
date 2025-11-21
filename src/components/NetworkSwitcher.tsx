@@ -11,10 +11,13 @@ export default function NetworkSwitcher() {
   // Auto-switch to Hemi on load
   useEffect(() => {
     if (!chainId) return
+    if (!switchChain) return
     if (chainId !== hemi.id) {
-      switchChain({ chainId: hemi.id }).catch(() => {
-        console.warn('User rejected chain switch')
-      })
+      try {
+        switchChain({ chainId: hemi.id })
+      } catch (err) {
+        console.warn('User rejected or failed chain switch', err)
+      }
     }
   }, [chainId, switchChain])
 
@@ -22,7 +25,14 @@ export default function NetworkSwitcher() {
 
   return (
     <button
-      onClick={() => switchChain({ chainId: hemi.id })}
+      onClick={() => {
+        if (!switchChain) return
+        try {
+          switchChain({ chainId: hemi.id })
+        } catch (err) {
+          console.warn('Manual chain switch failed', err)
+        }
+      }}
       className={`flex items-center gap-2 px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-sm transition ${
         isHemi ? 'text-orange-400' : 'text-neutral-300'
       }`}

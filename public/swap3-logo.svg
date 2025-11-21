@@ -1,0 +1,50 @@
+<svg
+  width="180"
+  height="40"
+  viewBox="0 0 180 40"
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-label=".SWAP3 logo"
+>
+  <defs>
+    <!-- Orange gradient to match your theme -->
+    <linearGradient id="swap3-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f97316" />
+      <stop offset="100%" stop-color="#facc15" />
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded gradient pill with the dot + S -->
+  <rect
+    x="0"
+    y="2"
+    width="40"
+    height="36"
+    rx="12"
+    fill="url(#swap3-grad)"
+  />
+  <text
+    x="20"
+    y="26"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif"
+    font-size="18"
+    font-weight="800"
+    fill="#000000"
+  >
+    .S
+  </text>
+
+  <!-- Wordmark: WAP3 -->
+  <text
+    x="52"
+    y="25"
+    font-family="system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif"
+    font-size="18"
+    font-weight="700"
+    letter-spacing="0.18em"
+    fill="#ffffff"
+  >
+    WAP3
+  </text>
+</svg>
