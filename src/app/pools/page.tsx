@@ -26,6 +26,20 @@ const shortAddr = (a?: string | null) => {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 };
 
+const formatUsdCompact = (usd?: number | null) => {
+  if (usd == null || !Number.isFinite(usd)) return "—";
+  const abs = Math.abs(usd);
+  if (abs >= 1e12) return `$${(usd / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `$${(usd / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `$${(usd / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `$${(usd / 1e3).toFixed(2)}K`;
+  return usd.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: usd < 1 ? 6 : usd < 100 ? 2 : 0,
+  });
+};
+
 const formatLiquidityCompact = (liq?: string | null) => {
   if (!liq) return "0";
   try {
@@ -65,6 +79,27 @@ const liquidityBigInt = (liq?: string | null) => {
   }
 };
 
+const getSessionCache = <T,>(key: string, maxAgeMs: number): T | null => {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { t: number; v: T };
+    if (!parsed?.t) return null;
+    if (Date.now() - parsed.t > maxAgeMs) return null;
+    return parsed.v;
+  } catch {
+    return null;
+  }
+};
+
+const setSessionCache = (key: string, v: unknown) => {
+  try {
+    sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v }));
+  } catch {
+    // ignore cache write errors
+  }
+};
+
 // --- page ------------------------------------------------------
 
 export default function PoolsPage() {
@@ -73,6 +108,10 @@ export default function PoolsPage() {
   const [rows, setRows] = useState<RawPool[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tvlUsdByPool, setTvlUsdByPool] = useState<Record<string, number>>({});
+  const [tvlSourceByPool, setTvlSourceByPool] = useState<
+    Record<string, string>
+  >({});
 
   async function load(refresh = false) {
     setError(null);
@@ -106,24 +145,113 @@ export default function PoolsPage() {
     void load(false);
   }, []);
 
+  useEffect(() => {
+    if (!rows.length) return;
+    let cancelled = false;
+
+    (async () => {
+      const next: Record<string, number> = {};
+      const nextSrc: Record<string, string> = {};
+
+      await Promise.allSettled(
+        rows.map(async (r) => {
+          const key = r.pool.toLowerCase();
+          try {
+            // ---- 1) Gecko pool endpoint (short cache ~60s)
+            const geckoCacheKey = `gecko:tvl:${key}`;
+            const cachedGecko = getSessionCache<any>(geckoCacheKey, 60_000);
+
+            let geckoJson: any | null = cachedGecko;
+            if (!geckoJson) {
+              const res = await fetch(`/api/gecko/pool/${r.pool}`);
+              if (res.ok) {
+                geckoJson = await res.json();
+                setSessionCache(geckoCacheKey, geckoJson);
+              }
+            }
+
+            const attrs = geckoJson?.data?.attributes;
+            if (attrs) {
+              const reserveUsd = Number(attrs.reserve_in_usd);
+              const baseLiqUsd = Number(attrs.base_token_liquidity_usd);
+              const quoteLiqUsd = Number(attrs.quote_token_liquidity_usd);
+              const tvl = Number.isFinite(reserveUsd)
+                ? reserveUsd
+                : (Number.isFinite(baseLiqUsd) ? baseLiqUsd : 0) +
+                  (Number.isFinite(quoteLiqUsd) ? quoteLiqUsd : 0);
+
+              if (Number.isFinite(tvl) && tvl > 0) {
+                next[key] = tvl;
+                nextSrc[key] = "gecko";
+                return;
+              }
+            }
+
+            // ---- 2) Fallback on-chain TVL (longer cache ~30m)
+            const fbCacheKey = `fb:tvl:${key}`;
+            const cachedFb = getSessionCache<any>(fbCacheKey, 30 * 60_000);
+
+            let fbJson: any | null = cachedFb;
+            if (!fbJson) {
+              const fb = await fetch(`/api/pools/tvl/${r.pool}`);
+              if (!fb.ok) return;
+              fbJson = await fb.json();
+              setSessionCache(fbCacheKey, fbJson);
+            }
+
+            const tvlUsd = Number(fbJson?.tvlUsd);
+            if (Number.isFinite(tvlUsd) && tvlUsd > 0) {
+              next[key] = tvlUsd;
+              nextSrc[key] = fbJson?.source || "onchain";
+            }
+          } catch {
+            // ignore
+          }
+        })
+      );
+
+      if (!cancelled) {
+        setTvlUsdByPool((prev) => ({ ...prev, ...next }));
+        setTvlSourceByPool((prev) => ({ ...prev, ...nextSrc }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
+
   const enriched = useMemo(
     () =>
-      rows.map((r) => ({
-        ...r,
-        t0: byAddr.get(r.token0.toLowerCase()),
-        t1: byAddr.get(r.token1.toLowerCase()),
-        liqBig: liquidityBigInt(r.liquidity),
-      })),
-    [rows, byAddr]
+      rows.map((r) => {
+        const key = r.pool.toLowerCase();
+        return {
+          ...r,
+          t0: byAddr.get(r.token0.toLowerCase()),
+          t1: byAddr.get(r.token1.toLowerCase()),
+          liqBig: liquidityBigInt(r.liquidity),
+          tvlUsd: tvlUsdByPool[key] ?? 0,
+          tvlSource: tvlSourceByPool[key] ?? null,
+        };
+      }),
+    [rows, byAddr, tvlUsdByPool, tvlSourceByPool]
   );
 
   const sorted = useMemo(() => {
-    const nonZero = enriched.filter((r: any) => r.liqBig > 0n);
-    const zero = enriched.filter((r: any) => r.liqBig === 0n);
+    const nonZero = enriched.filter((r: any) => (r.tvlUsd ?? 0) > 0);
+    const zero = enriched.filter((r: any) => (r.tvlUsd ?? 0) === 0);
 
     nonZero.sort((a: any, b: any) => {
-      if (a.liqBig === b.liqBig) return 0;
-      return a.liqBig > b.liqBig ? -1 : 1;
+      if (a.tvlUsd === b.tvlUsd) return 0;
+      return a.tvlUsd > b.tvlUsd ? -1 : 1;
+    });
+
+    // For unpriced pools, sort by raw liquidity BigInt desc
+    zero.sort((a: any, b: any) => {
+      const la = a.liqBig ?? 0n;
+      const lb = b.liqBig ?? 0n;
+      if (la === lb) return 0;
+      return la > lb ? -1 : 1;
     });
 
     return [...nonZero, ...zero];
@@ -192,7 +320,6 @@ export default function PoolsPage() {
                     "-"
                   )}
                 </td>
-
                 {/* Pair with token logos + symbols */}
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
@@ -221,25 +348,82 @@ export default function PoolsPage() {
                     <span>{r.t1?.symbol ?? shortAddr(r.token1)}</span>
                   </div>
                 </td>
-
                 {/* Fee */}
                 <td className="px-4 py-2">
                   {Number.isFinite(r.fee as any)
                     ? `${(r.fee / 10000).toFixed(2)}%`
                     : "-"}
                 </td>
-
                 {/* Tick */}
                 <td className="px-4 py-2">{r.slot0 ? r.slot0.tick : "-"}</td>
-
                 {/* Tick spacing */}
                 <td className="px-4 py-2">{r.tickSpacing}</td>
-
                 {/* Liquidity */}
-                <td className="px-4 py-2" title={r.liquidity ?? "0"}>
-                  {formatLiquidityCompact(r.liquidity)}
-                </td>
 
+                {(() => {
+                  const isGecko =
+                    r.tvlUsd && r.tvlUsd > 0 && r.tvlSource === "gecko";
+                  const isEstimated =
+                    r.tvlUsd &&
+                    r.tvlUsd > 0 &&
+                    r.tvlSource &&
+                    r.tvlSource !== "gecko";
+                  const isMissing = !r.tvlUsd || r.tvlUsd <= 0;
+
+                  const title = isGecko
+                    ? `TVL from GeckoTerminal: ${formatUsdCompact(r.tvlUsd)}`
+                    : isEstimated
+                    ? `Estimated TVL (${r.tvlSource}): ${formatUsdCompact(
+                        r.tvlUsd
+                      )}`
+                    : `No price data available yet. Showing raw liquidity: ${
+                        r.liquidity ?? "0"
+                      }`;
+
+                  return (
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        {/* source badge slot (fixed width so all rows align) */}
+                        <span className="w-5 shrink-0 flex justify-start">
+                          {isGecko ? (
+                            <img
+                              src="/geckoterminal.svg"
+                              alt="GeckoTerminal"
+                              title="GeckoTerminal"
+                              className="w-4 h-4 opacity-90"
+                            />
+                          ) : isEstimated ? (
+                            <span
+                              className="inline-flex items-center justify-center w-4 h-4 rounded bg-neutral-800 text-neutral-200 text-[10px] border border-neutral-700"
+                              title={`On-chain estimate (${r.tvlSource})`}
+                            >
+                              🔗
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center justify-center w-4 h-4" />
+                          )}
+                        </span>
+
+                        {/* value */}
+                        <span
+                          className={
+                            isGecko
+                              ? "text-orange-300"
+                              : isEstimated
+                              ? "text-white"
+                              : "text-neutral-400"
+                          }
+                        >
+                          {isGecko || isEstimated
+                            ? formatUsdCompact(r.tvlUsd)
+                            : formatLiquidityCompact(r.liquidity)}
+                        </span>
+
+                        {/* optional NA badge (right side) */}
+                      </div>
+                    </td>
+                  );
+                })()}
                 {/* Actions */}
                 <td className="px-4 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
