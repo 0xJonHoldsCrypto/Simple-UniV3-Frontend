@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useTokens } from '@/state/useTokens'
 
 export type RawPool = {
@@ -44,6 +46,7 @@ const formatLiquidity = (liq?: string | null) => {
 
 export default function PoolsPage() {
   const { byAddr } = useTokens()
+  const router = useRouter()
   const [rows, setRows] = useState<RawPool[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -91,11 +94,11 @@ export default function PoolsPage() {
   )
 
   return (
-    <div className="max-w-5xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between bg-neutral-900/70 rounded-2xl p-4 shadow">
         <h1 className="text-3xl font-semibold">Pools</h1>
         <button
-          className="px-4 py-2 rounded-full bg-orange-500 hover:bg-orange-600 text-sm font-medium"
+          className="px-4 py-2 rounded-full bg-orange-500/90 hover:bg-orange-500 text-sm font-medium"
           onClick={() => load(true)}
           disabled={loading}
         >
@@ -105,7 +108,7 @@ export default function PoolsPage() {
 
       {error && <div className="text-sm text-red-400">{error}</div>}
 
-      <div className="overflow-x-auto rounded-xl border border-neutral-800">
+      <div className="overflow-x-auto rounded-2xl border border-neutral-800 bg-neutral-900/70 shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-neutral-900/80">
             <tr className="text-left text-xs uppercase tracking-wide text-neutral-400">
@@ -115,13 +118,14 @@ export default function PoolsPage() {
               <th className="px-4 py-2">Tick</th>
               <th className="px-4 py-2">Tick Spacing</th>
               <th className="px-4 py-2">Liquidity</th>
+              <th className="px-4 py-2 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {enriched.length === 0 && !loading && !error && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className="px-4 py-6 text-center text-neutral-500"
                 >
                   No pools found.
@@ -132,10 +136,26 @@ export default function PoolsPage() {
             {enriched.map((r) => (
               <tr
                 key={`${r.pool}-${r.fee}`}
-                className="border-t border-neutral-800"
+                className="border-t border-neutral-800 hover:bg-neutral-900/60 transition-colors cursor-pointer"
+                onClick={() => router.push(`/pools/${r.pool}`)}
               >
                 {/* Pool address */}
-                <td className="px-4 py-2 font-mono">{shortAddr(r.pool)}</td>
+                <td className="px-4 py-2 font-mono">
+                  {r.pool ? (
+                    <a
+                      href={`https://explorer.hemi.xyz/address/${r.pool}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={r.pool}
+                      className="underline hover:opacity-80"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {shortAddr(r.pool)}
+                    </a>
+                  ) : (
+                    '-'
+                  )}
+                </td>
 
                 {/* Pair with token logos + symbols */}
                 <td className="px-4 py-2">
@@ -181,6 +201,26 @@ export default function PoolsPage() {
 
                 {/* Liquidity */}
                 <td className="px-4 py-2">{formatLiquidity(r.liquidity)}</td>
+
+                {/* Actions */}
+                <td className="px-4 py-2 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <Link
+                      href={`/add?token0=${r.token0}&token1=${r.token1}&fee=${r.fee}&pool=${r.pool}`}
+                      className="px-3 py-1 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Add
+                    </Link>
+                    <Link
+                      href={`/pools/${r.pool}`}
+                      className="px-3 py-1 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Stats
+                    </Link>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
