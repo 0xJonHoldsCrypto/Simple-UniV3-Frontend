@@ -11,6 +11,10 @@ type Props = {
   label: string;
   value?: Address;
   onChange: (value?: Address) => void;
+
+  // Optional filters for token selector (used e.g. on Swap to hide canonical tokens)
+  excludeAddrs?: Address[];
+  excludeSymbols?: string[]; // case-insensitive
 };
 
 const erc20BalanceAbi = [
@@ -23,7 +27,13 @@ const erc20BalanceAbi = [
   },
 ] as const;
 
-export default function TokenInput({ label, value, onChange }: Props) {
+export default function TokenInput({
+  label,
+  value,
+  onChange,
+  excludeAddrs,
+  excludeSymbols,
+}: Props) {
   const { tokens, byAddr } = useTokens();
   const { address } = useAccount();
   const publicClient = usePublicClient();
@@ -35,15 +45,30 @@ export default function TokenInput({ label, value, onChange }: Props) {
 
   const selected = value ? byAddr.get(value.toLowerCase()) : undefined;
 
+  const tokensForModal = useMemo(() => {
+    const exclAddrs = new Set((excludeAddrs ?? []).map((a) => a.toLowerCase()));
+    const exclSyms = new Set(
+      (excludeSymbols ?? []).map((s) => s.toLowerCase())
+    );
+
+    if (!exclAddrs.size && !exclSyms.size) return tokens;
+
+    return tokens.filter((t) => {
+      const addr = t.address.toLowerCase();
+      const sym = (t.symbol ?? "").toLowerCase();
+      return !exclAddrs.has(addr) && !exclSyms.has(sym);
+    });
+  }, [tokens, excludeAddrs, excludeSymbols]);
+
   // ---- load balances when modal opens ----
   useEffect(() => {
     let active = true;
     async function run() {
-      if (!open || !address || !publicClient || !tokens.length) return;
+      if (!open || !address || !publicClient || !tokensForModal.length) return;
       setLoadingBalances(true);
       try {
         const entries: [string, bigint][] = await Promise.all(
-          tokens.map(async (t) => {
+          tokensForModal.map(async (t) => {
             const addr = t.address as Address;
             try {
               const bal = (await publicClient.readContract({
@@ -67,12 +92,12 @@ export default function TokenInput({ label, value, onChange }: Props) {
     return () => {
       active = false;
     };
-  }, [open, address, publicClient, tokens]);
+  }, [open, address, publicClient, tokensForModal]);
 
   // ---- filter + sort tokens for the list ----
   const filteredTokens = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let list = tokens;
+    let list = tokensForModal;
 
     if (q) {
       list = list.filter((t) => {
@@ -94,8 +119,7 @@ export default function TokenInput({ label, value, onChange }: Props) {
       return bb > ba ? 1 : -1;
     });
     return withSort;
-  }, [tokens, search, balances]);
-
+  }, [tokensForModal, search, balances]);
   function handleSelect(addr: string) {
     onChange(addr as Address);
     setOpen(false);

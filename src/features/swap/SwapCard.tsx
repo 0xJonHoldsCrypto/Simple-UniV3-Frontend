@@ -115,7 +115,18 @@ type Route = {
 const FEE_CANDIDATES = [500, 3000, 10000] as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
-
+// Canonical tokens from the Oku list that we want hidden *only* in Swap selectors.
+// Keep these loaded elsewhere (e.g., Pools page).
+const HIDDEN_SWAP_TOKENS: Address[] = [
+  "0x6b8f39d1bda75523f12ca527c4260ecc4889d547", // WBTC
+  "0x3026b071a730261b5c7735dcb83e787e1f55e414", // WETH
+  "0xd4348d0219cbf881a28fe1a17e0074388ca0baf6", // USDT
+  "0x6ae74e2cf82e830b27fea31f145e20df1860a2e5", // USDC
+  "0x63b75d4e00c9c518b0310b78ff6f83aa67e531cd", // WBTC.b
+  "0x0499af58073c78074a6ebb5943501d9cafe62570", // WETH.b
+  "0x4c9c2f5563f7b6d4f0cc99b6fa5d3d9d99c1e57b", // USDC.b
+  "0xf2b060feca9f9cb6f201f79fc12e4c5f5f6d50a5", // USDT.b
+].map((a) => a.toLowerCase() as Address);
 const factoryAbi = [
   {
     type: "function",
@@ -853,8 +864,12 @@ export default function SwapCard() {
       <div className="text-xl font-semibold">Swap</div>
 
       <div className="bg-neutral-800 rounded-xl p-3">
-        <TokenInput label="Token In" value={tokenIn} onChange={setTokenIn} />
-      </div>
+<TokenInput
+  label="Token In"
+  value={tokenIn}
+  onChange={setTokenIn}
+  excludeAddrs={HIDDEN_SWAP_TOKENS}
+/>      </div>
 
       <div className="flex justify-center">
         <button
@@ -868,8 +883,12 @@ export default function SwapCard() {
       </div>
 
       <div className="bg-neutral-800 rounded-xl p-3">
-        <TokenInput label="Token Out" value={tokenOut} onChange={setTokenOut} />
-      </div>
+<TokenInput
+  label="Token Out"
+  value={tokenOut}
+  onChange={setTokenOut}
+  excludeAddrs={HIDDEN_SWAP_TOKENS}
+/>      </div>
 
       <div className="space-y-1 bg-neutral-800 rounded-xl p-3">
         <div className="flex items-center justify-between text-xs opacity-70">
