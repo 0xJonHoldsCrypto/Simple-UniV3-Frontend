@@ -1,8 +1,8 @@
 // src/lib/univ3/quotes.ts
-import type { Address } from 'viem'
-import { parseUnits } from 'viem'
-import { UNI_V3_ADDRESSES } from '@/lib/addresses'
-import { getPoolAddress } from './pools'
+import type { Address } from "viem";
+import { parseUnits } from "viem";
+import { UNI_V3_ADDRESSES } from "@/lib/addresses";
+import { getPoolAddress } from "./pools";
 
 // QuoterV2: quoteExactInputSingle(QuoteExactInputSingleParams)
 // struct QuoteExactInputSingleParams {
@@ -14,30 +14,30 @@ import { getPoolAddress } from './pools'
 // }
 const quoterV2Abi = [
   {
-    name: 'quoteExactInputSingle',
-    type: 'function',
-    stateMutability: 'view',
+    name: "quoteExactInputSingle",
+    type: "function",
+    stateMutability: "view",
     inputs: [
       {
-        name: 'params',
-        type: 'tuple',
+        name: "params",
+        type: "tuple",
         components: [
-          { name: 'tokenIn', type: 'address' },
-          { name: 'tokenOut', type: 'address' },
-          { name: 'amountIn', type: 'uint256' },       // ✅ correct position
-          { name: 'fee', type: 'uint24' },
-          { name: 'sqrtPriceLimitX96', type: 'uint160' },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "amountIn", type: "uint256" }, // ✅ correct position
+          { name: "fee", type: "uint24" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
         ],
       },
     ],
     outputs: [
-      { name: 'amountOut', type: 'uint256' },
-      { name: 'sqrtPriceX96After', type: 'uint160' },
-      { name: 'initializedTicksCrossed', type: 'uint32' },
-      { name: 'gasEstimate', type: 'uint256' },
+      { name: "amountOut", type: "uint256" },
+      { name: "sqrtPriceX96After", type: "uint160" },
+      { name: "initializedTicksCrossed", type: "uint32" },
+      { name: "gasEstimate", type: "uint256" },
     ],
   },
-] as const
+] as const;
 
 export async function quoteExactInSingle(
   client: any,
@@ -48,40 +48,40 @@ export async function quoteExactInSingle(
     amountInHuman,
     decimalsIn,
   }: {
-    tokenIn: Address
-    tokenOut: Address
-    fee: number
-    amountInHuman: string
-    decimalsIn: number
-  },
+    tokenIn: Address;
+    tokenOut: Address;
+    fee: number;
+    amountInHuman: string;
+    decimalsIn: number;
+  }
 ): Promise<bigint> {
   // 1) Ensure pool exists for this fee tier
-  const pool = await getPoolAddress(client, tokenIn, tokenOut, fee)
-  if (!pool || pool === '0x0000000000000000000000000000000000000000') {
-    throw new Error(`Pool not found for fee ${fee / 10000}%`)
+  const pool = await getPoolAddress(client, tokenIn, tokenOut, fee);
+  if (!pool || pool === "0x0000000000000000000000000000000000000000") {
+    throw new Error(`Pool not found for fee ${fee / 10000}%`);
   }
 
   // 2) Scale input precisely
-  const amountIn = parseUnits(amountInHuman || '0', decimalsIn)
+  const amountIn = parseUnits(amountInHuman || "0", decimalsIn);
   if (amountIn === 0n) {
-    throw new Error('Enter a non-zero amount')
+    throw new Error("Enter a non-zero amount");
   }
 
   // 3) Quote via QuoterV2 (struct arg, correct order)
   const [amountOut] = (await client.readContract({
     address: UNI_V3_ADDRESSES.quoterV2 as Address,
     abi: quoterV2Abi,
-    functionName: 'quoteExactInputSingle',
+    functionName: "quoteExactInputSingle",
     args: [
       {
         tokenIn,
         tokenOut,
-        amountIn,                 // ✅ before fee
+        amountIn, // ✅ before fee
         fee,
         sqrtPriceLimitX96: 0n,
       },
     ],
-  })) as readonly [bigint, bigint, number, bigint]
+  })) as readonly [bigint, bigint, number, bigint];
 
-  return amountOut ?? 0n
+  return amountOut ?? 0n;
 }

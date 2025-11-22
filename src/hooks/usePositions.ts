@@ -1,58 +1,60 @@
 // src/hooks/usePositions.ts
-'use client'
+"use client";
 
-import { useEffect, useMemo, useState } from 'react'
-import type { Address } from 'viem'
-import { useAccount, usePublicClient } from 'wagmi'
-import { useTokens } from '@/state/useTokens'
-import { fetchUserPositions, type RawPosition } from '@/lib/univ3/position'
-import { UNI_V3_ADDRESSES } from '@/lib/addresses'
-import { isAddress } from 'viem'
+import { useEffect, useMemo, useState } from "react";
+import type { Address } from "viem";
+import { useAccount, usePublicClient } from "wagmi";
+import { useTokens } from "@/state/useTokens";
+import { fetchUserPositions, type RawPosition } from "@/lib/univ3/position";
+import { UNI_V3_ADDRESSES } from "@/lib/addresses";
+import { isAddress } from "viem";
 
 export type UiPosition = RawPosition & {
   t0?: {
-    symbol?: string
-    name?: string
-    logoURI?: string
-  }
+    symbol?: string;
+    name?: string;
+    logoURI?: string;
+  };
   t1?: {
-    symbol?: string
-    name?: string
-    logoURI?: string
-  }
-}
+    symbol?: string;
+    name?: string;
+    logoURI?: string;
+  };
+};
 
 export function usePositions() {
-  const { address } = useAccount()
-  const client = usePublicClient()
-  const { byAddr } = useTokens()
+  const { address } = useAccount();
+  const client = usePublicClient();
+  const { byAddr } = useTokens();
 
-  const [positions, setPositions] = useState<UiPosition[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [positions, setPositions] = useState<UiPosition[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let active = true
+    let active = true;
     async function run() {
-      setError(null)
-      setPositions([])
+      setError(null);
+      setPositions([]);
 
-      if (!client || !address) return
+      if (!client || !address) return;
 
-      const nfpmAddr = UNI_V3_ADDRESSES.nfpm as string | undefined
+      const nfpmAddr = UNI_V3_ADDRESSES.nfpm as string | undefined;
       if (!nfpmAddr || !isAddress(nfpmAddr)) {
-        setError('Positions contract (NFPM) is not configured on this network.')
-        return
+        setError(
+          "Positions contract (NFPM) is not configured on this network."
+        );
+        return;
       }
 
-      setLoading(true)
+      setLoading(true);
       try {
-        const raw = await fetchUserPositions(client as any, address as Address)
-        if (!active) return
+        const raw = await fetchUserPositions(client as any, address as Address);
+        if (!active) return;
 
         const enriched: UiPosition[] = raw.map((p) => {
-          const t0 = byAddr.get(p.token0.toLowerCase())
-          const t1 = byAddr.get(p.token1.toLowerCase())
+          const t0 = byAddr.get(p.token0.toLowerCase());
+          const t1 = byAddr.get(p.token1.toLowerCase());
           return {
             ...p,
             t0: t0 && {
@@ -65,30 +67,30 @@ export function usePositions() {
               name: t1.name,
               logoURI: t1.logoURI,
             },
-          }
-        })
+          };
+        });
 
-        setPositions(enriched)
+        setPositions(enriched);
       } catch (e: any) {
-        if (!active) return
+        if (!active) return;
         const msg =
           e?.shortMessage ||
           e?.message ||
-          'Failed to load positions (check console for details)'
-        setError(msg)
-        console.error('[usePositions] error', e)
+          "Failed to load positions (check console for details)";
+        setError(msg);
+        console.error("[usePositions] error", e);
       } finally {
-        if (active) setLoading(false)
+        if (active) setLoading(false);
       }
     }
 
-    run()
+    run();
     return () => {
-      active = false
-    }
-  }, [client, address, byAddr])
+      active = false;
+    };
+  }, [client, address, byAddr]);
 
-  const hasPositions = useMemo(() => positions.length > 0, [positions])
+  const hasPositions = useMemo(() => positions.length > 0, [positions]);
 
-  return { positions, loading, error, hasPositions }
+  return { positions, loading, error, hasPositions };
 }

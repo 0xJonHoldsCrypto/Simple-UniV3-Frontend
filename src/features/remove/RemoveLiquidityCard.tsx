@@ -1,190 +1,191 @@
 // src/features/remove/RemoveLiquidityCard.tsx
-'use client'
+"use client";
 
-import { useEffect, useMemo, useState } from 'react'
-import type { Address } from 'viem'
-import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
-import { UNI_V3_ADDRESSES } from '@/lib/addresses'
-import { useTokens } from '@/state/useTokens'
+import { useEffect, useMemo, useState } from "react";
+import type { Address } from "viem";
+import { useAccount, usePublicClient, useWalletClient } from "wagmi";
+import { UNI_V3_ADDRESSES } from "@/lib/addresses";
+import { useTokens } from "@/state/useTokens";
 
 const nfpmAbi = [
   // balanceOf(owner)
   {
-    type: 'function',
-    name: 'balanceOf',
-    stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }],
-    outputs: [{ type: 'uint256' }],
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ type: "uint256" }],
   },
   // tokenOfOwnerByIndex(owner, index)
   {
-    type: 'function',
-    name: 'tokenOfOwnerByIndex',
-    stateMutability: 'view',
+    type: "function",
+    name: "tokenOfOwnerByIndex",
+    stateMutability: "view",
     inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'index', type: 'uint256' },
+      { name: "owner", type: "address" },
+      { name: "index", type: "uint256" },
     ],
-    outputs: [{ type: 'uint256' }],
+    outputs: [{ type: "uint256" }],
   },
   // positions(tokenId)
   {
-    type: 'function',
-    name: 'positions',
-    stateMutability: 'view',
-    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    type: "function",
+    name: "positions",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
     outputs: [
-      { name: 'nonce', type: 'uint96' },
-      { name: 'operator', type: 'address' },
-      { name: 'token0', type: 'address' },
-      { name: 'token1', type: 'address' },
-      { name: 'fee', type: 'uint24' },
-      { name: 'tickLower', type: 'int24' },
-      { name: 'tickUpper', type: 'int24' },
-      { name: 'liquidity', type: 'uint128' },
-      { name: 'feeGrowthInside0LastX128', type: 'uint256' },
-      { name: 'feeGrowthInside1LastX128', type: 'uint256' },
-      { name: 'tokensOwed0', type: 'uint128' },
-      { name: 'tokensOwed1', type: 'uint128' },
+      { name: "nonce", type: "uint96" },
+      { name: "operator", type: "address" },
+      { name: "token0", type: "address" },
+      { name: "token1", type: "address" },
+      { name: "fee", type: "uint24" },
+      { name: "tickLower", type: "int24" },
+      { name: "tickUpper", type: "int24" },
+      { name: "liquidity", type: "uint128" },
+      { name: "feeGrowthInside0LastX128", type: "uint256" },
+      { name: "feeGrowthInside1LastX128", type: "uint256" },
+      { name: "tokensOwed0", type: "uint128" },
+      { name: "tokensOwed1", type: "uint128" },
     ],
   },
   // decreaseLiquidity(params)
   {
-    type: 'function',
-    name: 'decreaseLiquidity',
-    stateMutability: 'nonpayable',
+    type: "function",
+    name: "decreaseLiquidity",
+    stateMutability: "nonpayable",
     inputs: [
       {
-        name: 'params',
-        type: 'tuple',
+        name: "params",
+        type: "tuple",
         components: [
-          { name: 'tokenId', type: 'uint256' },
-          { name: 'liquidity', type: 'uint128' },
-          { name: 'amount0Min', type: 'uint256' },
-          { name: 'amount1Min', type: 'uint256' },
-          { name: 'deadline', type: 'uint256' },
+          { name: "tokenId", type: "uint256" },
+          { name: "liquidity", type: "uint128" },
+          { name: "amount0Min", type: "uint256" },
+          { name: "amount1Min", type: "uint256" },
+          { name: "deadline", type: "uint256" },
         ],
       },
     ],
     outputs: [
-      { name: 'amount0', type: 'uint256' },
-      { name: 'amount1', type: 'uint256' },
+      { name: "amount0", type: "uint256" },
+      { name: "amount1", type: "uint256" },
     ],
   },
   // collect(params)
   {
-    type: 'function',
-    name: 'collect',
-    stateMutability: 'nonpayable',
+    type: "function",
+    name: "collect",
+    stateMutability: "nonpayable",
     inputs: [
       {
-        name: 'params',
-        type: 'tuple',
+        name: "params",
+        type: "tuple",
         components: [
-          { name: 'tokenId', type: 'uint256' },
-          { name: 'recipient', type: 'address' },
-          { name: 'amount0Max', type: 'uint128' },
-          { name: 'amount1Max', type: 'uint128' },
+          { name: "tokenId", type: "uint256" },
+          { name: "recipient", type: "address" },
+          { name: "amount0Max", type: "uint128" },
+          { name: "amount1Max", type: "uint128" },
         ],
       },
     ],
     outputs: [
-      { name: 'amount0', type: 'uint256' },
-      { name: 'amount1', type: 'uint256' },
+      { name: "amount0", type: "uint256" },
+      { name: "amount1", type: "uint256" },
     ],
   },
-] as const
+] as const;
 
 type RawPosition = readonly [
-  bigint,   // nonce
-  Address,  // operator
-  Address,  // token0
-  Address,  // token1
-  number,   // fee
-  number,   // tickLower
-  number,   // tickUpper
-  bigint,   // liquidity
-  bigint,   // feeGrowthInside0LastX128
-  bigint,   // feeGrowthInside1LastX128
-  bigint,   // tokensOwed0
-  bigint    // tokensOwed1
-]
+  bigint, // nonce
+  Address, // operator
+  Address, // token0
+  Address, // token1
+  number, // fee
+  number, // tickLower
+  number, // tickUpper
+  bigint, // liquidity
+  bigint, // feeGrowthInside0LastX128
+  bigint, // feeGrowthInside1LastX128
+  bigint, // tokensOwed0
+  bigint // tokensOwed1
+];
 
 type PositionRow = {
-  id: bigint
-  token0: Address
-  token1: Address
-  fee: number
-  tickLower: number
-  tickUpper: number
-  liquidity: bigint
-  tokensOwed0: bigint
-  tokensOwed1: bigint
-}
+  id: bigint;
+  token0: Address;
+  token1: Address;
+  fee: number;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+  tokensOwed0: bigint;
+  tokensOwed1: bigint;
+};
 
 export default function RemoveLiquidityCard() {
-  const { address } = useAccount()
-  const client = usePublicClient()
-  const { data: walletClient } = useWalletClient()
-  const { byAddr } = useTokens()
+  const { address } = useAccount();
+  const client = usePublicClient();
+  const { data: walletClient } = useWalletClient();
+  const { byAddr } = useTokens();
 
-  const [rows, setRows] = useState<PositionRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
+  const [rows, setRows] = useState<PositionRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [txPendingFor, setTxPendingFor] = useState<string | null>(null)
-  const [txMsg, setTxMsg] = useState<string | null>(null)
-  const [txErr, setTxErr] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [txPendingFor, setTxPendingFor] = useState<string | null>(null);
+  const [txMsg, setTxMsg] = useState<string | null>(null);
+  const [txErr, setTxErr] = useState<string | null>(null);
 
   // Fetch all positions for the connected wallet
   useEffect(() => {
-    let active = true
+    let active = true;
     async function run() {
-      setErr(null)
-      setRows([])
-      if (!client || !address) return
-      setLoading(true)
+      setErr(null);
+      setRows([]);
+      if (!client || !address) return;
+      setLoading(true);
       try {
-        const nfpm = UNI_V3_ADDRESSES.positionManager as Address
+        const nfpm = UNI_V3_ADDRESSES.positionManager as Address;
         const bal = (await client.readContract({
           address: nfpm,
           abi: nfpmAbi,
-          functionName: 'balanceOf',
+          functionName: "balanceOf",
           args: [address as Address],
-        })) as bigint
+        })) as bigint;
 
-        const n = Number(bal)
+        const n = Number(bal);
         if (n === 0) {
-          if (active) setRows([])
-          return
+          if (active) setRows([]);
+          return;
         }
         // Safety cap
-        const maxPositions = Math.min(n, 100)
+        const maxPositions = Math.min(n, 100);
 
         const ids = await Promise.all(
           [...Array(maxPositions)].map((_, i) =>
             client.readContract({
               address: nfpm,
               abi: nfpmAbi,
-              functionName: 'tokenOfOwnerByIndex',
+              functionName: "tokenOfOwnerByIndex",
               args: [address as Address, BigInt(i)],
             })
           )
-        )
+        );
 
         const pos = await Promise.all(
-          ids.map((id) =>
-            client.readContract({
-              address: nfpm,
-              abi: nfpmAbi,
-              functionName: 'positions',
-              args: [id as bigint],
-            }) as Promise<RawPosition>
+          ids.map(
+            (id) =>
+              client.readContract({
+                address: nfpm,
+                abi: nfpmAbi,
+                functionName: "positions",
+                args: [id as bigint],
+              }) as Promise<RawPosition>
           )
-        )
+        );
 
-        if (!active) return
+        if (!active) return;
         const rowsMapped: PositionRow[] = pos.map((p, i) => ({
           id: ids[i] as bigint,
           token0: p[2] as Address,
@@ -195,37 +196,38 @@ export default function RemoveLiquidityCard() {
           liquidity: p[7] as bigint,
           tokensOwed0: p[10] as bigint,
           tokensOwed1: p[11] as bigint,
-        }))
+        }));
 
-        setRows(rowsMapped)
+        setRows(rowsMapped);
       } catch (e: any) {
-        if (active) setErr(e?.shortMessage || e?.message || 'Failed to load positions')
+        if (active)
+          setErr(e?.shortMessage || e?.message || "Failed to load positions");
       } finally {
-        if (active) setLoading(false)
+        if (active) setLoading(false);
       }
     }
-    run()
+    run();
     return () => {
-      active = false
-    }
-  }, [client, address])
+      active = false;
+    };
+  }, [client, address]);
 
-  const hasPositions = rows.length > 0
+  const hasPositions = rows.length > 0;
 
   async function handleCollect(id: bigint) {
-    setTxErr(null)
-    setTxMsg(null)
+    setTxErr(null);
+    setTxMsg(null);
     if (!walletClient || !address) {
-      setTxErr('Connect wallet first')
-      return
+      setTxErr("Connect wallet first");
+      return;
     }
     try {
-      setTxPendingFor(id.toString())
-      const nfpm = UNI_V3_ADDRESSES.positionManager as Address
+      setTxPendingFor(id.toString());
+      const nfpm = UNI_V3_ADDRESSES.positionManager as Address;
       const hash = await walletClient.writeContract({
         address: nfpm,
         abi: nfpmAbi,
-        functionName: 'collect',
+        functionName: "collect",
         args: [
           {
             tokenId: id,
@@ -234,51 +236,51 @@ export default function RemoveLiquidityCard() {
             amount1Max: 2n ** 128n - 1n,
           },
         ],
-      })
-      setTxMsg(`Collect tx sent: ${String(hash)}`)
+      });
+      setTxMsg(`Collect tx sent: ${String(hash)}`);
     } catch (e: any) {
-      setTxErr(e?.shortMessage || e?.message || 'Collect failed')
+      setTxErr(e?.shortMessage || e?.message || "Collect failed");
     } finally {
-      setTxPendingFor(null)
+      setTxPendingFor(null);
     }
   }
 
   async function handleRemove(id: bigint, pct: number) {
-    setTxErr(null)
-    setTxMsg(null)
+    setTxErr(null);
+    setTxMsg(null);
     if (!walletClient || !address || !client) {
-      setTxErr('Connect wallet first')
-      return
+      setTxErr("Connect wallet first");
+      return;
     }
-    const row = rows.find((r) => r.id === id)
+    const row = rows.find((r) => r.id === id);
     if (!row) {
-      setTxErr('Position not found in local state')
-      return
+      setTxErr("Position not found in local state");
+      return;
     }
     if (row.liquidity === 0n) {
-      setTxErr('Position has zero liquidity')
-      return
+      setTxErr("Position has zero liquidity");
+      return;
     }
 
-    const liqToRemove = (row.liquidity * BigInt(pct)) / 100n
+    const liqToRemove = (row.liquidity * BigInt(pct)) / 100n;
     if (liqToRemove === 0n) {
-      setTxErr(`Liquidity too small to remove ${pct}%`)
-      return
+      setTxErr(`Liquidity too small to remove ${pct}%`);
+      return;
     }
 
     try {
-      setTxPendingFor(id.toString())
-      const nfpm = UNI_V3_ADDRESSES.positionManager as Address
+      setTxPendingFor(id.toString());
+      const nfpm = UNI_V3_ADDRESSES.positionManager as Address;
       const deadline = BigInt(
         Math.floor(Date.now() / 1000) +
           Number(process.env.NEXT_PUBLIC_TX_DEADLINE_MIN ?? 20) * 60
-      )
+      );
 
       // 1) decreaseLiquidity
       await walletClient.writeContract({
         address: nfpm,
         abi: nfpmAbi,
-        functionName: 'decreaseLiquidity',
+        functionName: "decreaseLiquidity",
         args: [
           {
             tokenId: id,
@@ -288,13 +290,13 @@ export default function RemoveLiquidityCard() {
             deadline,
           },
         ],
-      })
+      });
 
       // 2) collect
       const hash = await walletClient.writeContract({
         address: nfpm,
         abi: nfpmAbi,
-        functionName: 'collect',
+        functionName: "collect",
         args: [
           {
             tokenId: id,
@@ -303,18 +305,22 @@ export default function RemoveLiquidityCard() {
             amount1Max: 2n ** 128n - 1n,
           },
         ],
-      })
+      });
 
-      setTxMsg(`Removed ${pct}% and collected from position #${id.toString()} – tx: ${String(hash)}`)
+      setTxMsg(
+        `Removed ${pct}% and collected from position #${id.toString()} – tx: ${String(
+          hash
+        )}`
+      );
 
       // Refresh that one position’s view (lightweight)
       try {
         const fresh = (await client.readContract({
           address: UNI_V3_ADDRESSES.positionManager as Address,
           abi: nfpmAbi,
-          functionName: 'positions',
+          functionName: "positions",
           args: [id],
-        })) as RawPosition
+        })) as RawPosition;
 
         setRows((prev) =>
           prev.map((r) =>
@@ -327,14 +333,14 @@ export default function RemoveLiquidityCard() {
                 }
               : r
           )
-        )
+        );
       } catch {
         // best-effort; ignore
       }
     } catch (e: any) {
-      setTxErr(e?.shortMessage || e?.message || 'Remove liquidity failed')
+      setTxErr(e?.shortMessage || e?.message || "Remove liquidity failed");
     } finally {
-      setTxPendingFor(null)
+      setTxPendingFor(null);
     }
   }
 
@@ -347,11 +353,15 @@ export default function RemoveLiquidityCard() {
 
       {loading && <div className="text-sm opacity-80">Loading positions…</div>}
       {!loading && !hasPositions && (
-        <div className="text-sm opacity-70">No v3 positions found for this wallet.</div>
+        <div className="text-sm opacity-70">
+          No v3 positions found for this wallet.
+        </div>
       )}
       {err && <div className="text-xs text-red-400">{err}</div>}
       {txErr && <div className="text-xs text-red-400">{txErr}</div>}
-      {txMsg && <div className="text-xs text-emerald-400 break-all">{txMsg}</div>}
+      {txMsg && (
+        <div className="text-xs text-emerald-400 break-all">{txMsg}</div>
+      )}
 
       {hasPositions && (
         <div className="overflow-x-auto text-sm border border-neutral-800 rounded-xl">
@@ -368,17 +378,18 @@ export default function RemoveLiquidityCard() {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const t0 = byAddr.get(r.token0.toLowerCase())
-                const t1 = byAddr.get(r.token1.toLowerCase())
-                const idStr = r.id.toString()
-                const isExpanded = expandedId === idStr
-                const pending = txPendingFor === idStr
+                const t0 = byAddr.get(r.token0.toLowerCase());
+                const t1 = byAddr.get(r.token1.toLowerCase());
+                const idStr = r.id.toString();
+                const isExpanded = expandedId === idStr;
+                const pending = txPendingFor === idStr;
 
                 return (
-                  <tr key={idStr} className="border-t border-neutral-800 align-top">
-                    <td className="px-3 py-2 font-mono text-xs">
-                      #{idStr}
-                    </td>
+                  <tr
+                    key={idStr}
+                    className="border-t border-neutral-800 align-top"
+                  >
+                    <td className="px-3 py-2 font-mono text-xs">#{idStr}</td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
                         {t0?.logoURI && (
@@ -411,10 +422,12 @@ export default function RemoveLiquidityCard() {
                       <button
                         className="text-xs px-3 py-1 rounded-full bg-neutral-800 hover:bg-neutral-700"
                         onClick={() =>
-                          setExpandedId((prev) => (prev === idStr ? null : idStr))
+                          setExpandedId((prev) =>
+                            prev === idStr ? null : idStr
+                          )
                         }
                       >
-                        {isExpanded ? 'Hide' : 'Manage'}
+                        {isExpanded ? "Hide" : "Manage"}
                       </button>
 
                       {isExpanded && (
@@ -435,13 +448,13 @@ export default function RemoveLiquidityCard() {
                           <div className="opacity-70 mt-2 mb-1">Fees</div>
                           <div className="flex justify-between">
                             <span>
-                              Owed0:{' '}
+                              Owed0:{" "}
                               <span className="font-mono">
                                 {r.tokensOwed0.toString()}
                               </span>
                             </span>
                             <span>
-                              Owed1:{' '}
+                              Owed1:{" "}
                               <span className="font-mono">
                                 {r.tokensOwed1.toString()}
                               </span>
@@ -463,12 +476,12 @@ export default function RemoveLiquidityCard() {
                       )}
                     </td>
                   </tr>
-                )
+                );
               })}
             </tbody>
           </table>
         </div>
       )}
     </div>
-  )
+  );
 }

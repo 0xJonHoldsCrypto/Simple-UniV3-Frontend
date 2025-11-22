@@ -1,87 +1,110 @@
-'use client'
+"use client";
 
-import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { useTokens } from '@/state/useTokens'
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useTokens } from "@/state/useTokens";
 
 export type RawPool = {
-  pool: string
-  token0: string
-  token1: string
-  fee: number
-  tickSpacing: number
-  liquidity: string
+  pool: string;
+  token0: string;
+  token1: string;
+  fee: number;
+  tickSpacing: number;
+  liquidity: string;
   slot0?: {
-    sqrtPriceX96: string
-    tick: number
-  } | null
-}
+    sqrtPriceX96: string;
+    tick: number;
+  } | null;
+};
 
 // --- helpers ---------------------------------------------------
 
 const shortAddr = (a?: string | null) => {
-  if (!a) return '-'
-  if (a.length < 10) return a
-  return `${a.slice(0, 6)}…${a.slice(-4)}`
-}
+  if (!a) return "-";
+  if (a.length < 10) return a;
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+};
 
-const formatLiquidity = (liq?: string | null) => {
-  if (!liq) return '0'
+const formatLiquidityCompact = (liq?: string | null) => {
+  if (!liq) return "0";
   try {
-    const big = BigInt(liq)
-    if (big === 0n) return '0'
-    const s = big.toString()
-    if (s.length <= 6) return s
-    const headLen = s.length % 3 || 3
-    const head = s.slice(0, headLen)
-    const rest = s.slice(headLen).match(/.{1,3}/g) ?? []
-    return [head, ...rest].join(',')
+    const big = BigInt(liq);
+    if (big === 0n) return "0";
+
+    // Convert to a compact, human-friendly number.
+    // NOTE: Uniswap V3 `liquidity` is a raw liquidity value, not token amounts.
+    const units = ["", "K", "M", "B", "T", "P", "E"];
+    let unitIndex = 0;
+    let value = big;
+
+    while (value >= 1000n && unitIndex < units.length - 1) {
+      value /= 1000n;
+      unitIndex++;
+    }
+
+    // For more precision, compute a 2-decimal float using the original BigInt.
+    const denom = 1000n ** BigInt(unitIndex);
+    const num = Number(big) / Number(denom);
+    if (!Number.isFinite(num)) return big.toString();
+
+    return `${num.toLocaleString(undefined, {
+      maximumFractionDigits: num < 10 ? 3 : 2,
+      minimumFractionDigits: 0,
+    })}${units[unitIndex]}`;
   } catch {
-    return liq
+    return liq;
   }
-}
+};
+
+const liquidityBigInt = (liq?: string | null) => {
+  try {
+    return liq ? BigInt(liq) : 0n;
+  } catch {
+    return 0n;
+  }
+};
 
 // --- page ------------------------------------------------------
 
 export default function PoolsPage() {
-  const { byAddr } = useTokens()
-  const router = useRouter()
-  const [rows, setRows] = useState<RawPool[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { byAddr } = useTokens();
+  const router = useRouter();
+  const [rows, setRows] = useState<RawPool[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function load(refresh = false) {
-    setError(null)
-    setLoading(true)
+    setError(null);
+    setLoading(true);
     try {
-      const url = refresh ? '/api/pools?refresh=1' : '/api/pools'
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = (await res.json()) as RawPool[]
+      const url = refresh ? "/api/pools?refresh=1" : "/api/pools";
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as RawPool[];
 
       // filter out any diag/summary/malformed entries
       const valid = data.filter(
         (r) =>
           r &&
-          typeof r.pool === 'string' &&
-          r.pool.startsWith('0x') &&
+          typeof r.pool === "string" &&
+          r.pool.startsWith("0x") &&
           r.token0 &&
           r.token1
-      )
+      );
 
-      setRows(valid)
+      setRows(valid);
     } catch (e: any) {
-      setError(e?.message || 'Failed to load pools')
-      setRows([])
+      setError(e?.message || "Failed to load pools");
+      setRows([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    void load(false)
-  }, [])
+    void load(false);
+  }, []);
 
   const enriched = useMemo(
     () =>
@@ -89,9 +112,22 @@ export default function PoolsPage() {
         ...r,
         t0: byAddr.get(r.token0.toLowerCase()),
         t1: byAddr.get(r.token1.toLowerCase()),
+        liqBig: liquidityBigInt(r.liquidity),
       })),
     [rows, byAddr]
-  )
+  );
+
+  const sorted = useMemo(() => {
+    const nonZero = enriched.filter((r: any) => r.liqBig > 0n);
+    const zero = enriched.filter((r: any) => r.liqBig === 0n);
+
+    nonZero.sort((a: any, b: any) => {
+      if (a.liqBig === b.liqBig) return 0;
+      return a.liqBig > b.liqBig ? -1 : 1;
+    });
+
+    return [...nonZero, ...zero];
+  }, [enriched]);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -102,7 +138,7 @@ export default function PoolsPage() {
           onClick={() => load(true)}
           disabled={loading}
         >
-          {loading ? 'Refreshing…' : 'Refresh now'}
+          {loading ? "Refreshing…" : "Refresh now"}
         </button>
       </div>
 
@@ -122,7 +158,7 @@ export default function PoolsPage() {
             </tr>
           </thead>
           <tbody>
-            {enriched.length === 0 && !loading && !error && (
+            {sorted.length === 0 && !loading && !error && (
               <tr>
                 <td
                   colSpan={7}
@@ -133,7 +169,7 @@ export default function PoolsPage() {
               </tr>
             )}
 
-            {enriched.map((r) => (
+            {sorted.map((r: any) => (
               <tr
                 key={`${r.pool}-${r.fee}`}
                 className="border-t border-neutral-800 hover:bg-neutral-900/60 transition-colors cursor-pointer"
@@ -153,7 +189,7 @@ export default function PoolsPage() {
                       {shortAddr(r.pool)}
                     </a>
                   ) : (
-                    '-'
+                    "-"
                   )}
                 </td>
 
@@ -190,17 +226,19 @@ export default function PoolsPage() {
                 <td className="px-4 py-2">
                   {Number.isFinite(r.fee as any)
                     ? `${(r.fee / 10000).toFixed(2)}%`
-                    : '-'}
+                    : "-"}
                 </td>
 
                 {/* Tick */}
-                <td className="px-4 py-2">{r.slot0 ? r.slot0.tick : '-'}</td>
+                <td className="px-4 py-2">{r.slot0 ? r.slot0.tick : "-"}</td>
 
                 {/* Tick spacing */}
                 <td className="px-4 py-2">{r.tickSpacing}</td>
 
                 {/* Liquidity */}
-                <td className="px-4 py-2">{formatLiquidity(r.liquidity)}</td>
+                <td className="px-4 py-2" title={r.liquidity ?? "0"}>
+                  {formatLiquidityCompact(r.liquidity)}
+                </td>
 
                 {/* Actions */}
                 <td className="px-4 py-2 text-right">
@@ -227,5 +265,5 @@ export default function PoolsPage() {
         </table>
       </div>
     </div>
-  )
+  );
 }
