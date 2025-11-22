@@ -152,7 +152,6 @@ const poolAbi = [
 ] as const;
 
 export default function SwapCard() {
-  console.log("UNI_V3_ADDRESSES (browser)", UNI_V3_ADDRESSES);
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
@@ -864,12 +863,13 @@ export default function SwapCard() {
       <div className="text-xl font-semibold">Swap</div>
 
       <div className="bg-neutral-800 rounded-xl p-3">
-<TokenInput
-  label="Token In"
-  value={tokenIn}
-  onChange={setTokenIn}
-  excludeAddrs={HIDDEN_SWAP_TOKENS}
-/>      </div>
+        <TokenInput
+          label="Token In"
+          value={tokenIn}
+          onChange={setTokenIn}
+          excludeAddrs={HIDDEN_SWAP_TOKENS}
+        />{" "}
+      </div>
 
       <div className="flex justify-center">
         <button
@@ -883,12 +883,13 @@ export default function SwapCard() {
       </div>
 
       <div className="bg-neutral-800 rounded-xl p-3">
-<TokenInput
-  label="Token Out"
-  value={tokenOut}
-  onChange={setTokenOut}
-  excludeAddrs={HIDDEN_SWAP_TOKENS}
-/>      </div>
+        <TokenInput
+          label="Token Out"
+          value={tokenOut}
+          onChange={setTokenOut}
+          excludeAddrs={HIDDEN_SWAP_TOKENS}
+        />{" "}
+      </div>
 
       <div className="space-y-1 bg-neutral-800 rounded-xl p-3">
         <div className="flex items-center justify-between text-xs opacity-70">

@@ -1,6 +1,13 @@
 // src/app/api/pools/tvl/[pool]/route.ts
 import { NextResponse } from "next/server";
-import { createPublicClient, http, parseUnits, formatUnits } from "viem";
+import {
+  createPublicClient,
+  http,
+  parseUnits,
+  formatUnits,
+  type Address,
+  isAddress,
+} from "viem";
 import { hemi } from "@/lib/chains/hemi";
 
 const erc20Abi = [
@@ -56,14 +63,16 @@ export async function GET(
   req: Request,
   { params }: { params: { pool: string } }
 ) {
-  const pool = params.pool?.toLowerCase();
+  const poolParam = params.pool?.toLowerCase();
 
-  if (!pool || !pool.startsWith("0x")) {
+  if (!poolParam || !isAddress(poolParam)) {
     return NextResponse.json(
       { error: "Invalid pool address" },
       { status: 400 }
     );
   }
+
+  const pool = poolParam as Address;
 
   try {
     // Need token0 / token1 from the pool
@@ -129,7 +138,7 @@ export async function GET(
       (p1 ?? 0) * amt1;
 
     return NextResponse.json({
-      pool,
+      pool: poolParam,
       token0,
       token1,
       amount0: amt0,

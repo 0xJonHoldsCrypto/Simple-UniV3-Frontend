@@ -120,6 +120,7 @@ export default function TokenInput({
     });
     return withSort;
   }, [tokensForModal, search, balances]);
+
   function handleSelect(addr: string) {
     onChange(addr as Address);
     setOpen(false);
