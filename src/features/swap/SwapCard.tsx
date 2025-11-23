@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Address, Hex } from "viem";
 import {
   parseUnits,
@@ -151,17 +151,43 @@ const poolAbi = [
   },
 ] as const;
 
-export default function SwapCard() {
+type SwapCardProps = {
+  initialTokenIn?: Address;
+  initialTokenOut?: Address;
+  initialFee?: number;
+  initialAmountIn?: string;
+  initialChainId?: number; // reserved for future chain switching
+};
+
+export default function SwapCard({
+  initialTokenIn,
+  initialTokenOut,
+  initialFee,
+  initialAmountIn,
+  initialChainId: _initialChainId,
+}: SwapCardProps) {
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
   const { tokens, byAddr } = useTokens();
 
-  // form state
-  const [tokenIn, setTokenIn] = useState<Address | undefined>(undefined);
-  const [tokenOut, setTokenOut] = useState<Address | undefined>(undefined);
-  const [fee, setFee] = useState(3000); // 0.30%
-  const [amountIn, setAmountIn] = useState("0.10");
+  // form state (seeded from URL props when provided)
+  const [tokenIn, setTokenIn] = useState<Address | undefined>(initialTokenIn);
+  const [tokenOut, setTokenOut] = useState<Address | undefined>(
+    initialTokenOut
+  );
+  const [fee, setFee] = useState(
+    Number.isFinite(initialFee) ? (initialFee as number) : 3000
+  );
+  const [amountIn, setAmountIn] = useState(
+    typeof initialAmountIn === "string" && initialAmountIn.trim() !== ""
+      ? initialAmountIn
+      : "0.10"
+  );
+
+  // If fee came from URL, don't auto-override it during route finding.
+  const feeLockedFromUrl = useRef(Number.isFinite(initialFee));
+  const didInitFromUrl = useRef(false);
   const [slippageBps, setSlippageBps] = useState(
     Number(process.env.NEXT_PUBLIC_DEFAULT_SLIPPAGE_BPS ?? 50)
   );
@@ -217,6 +243,28 @@ export default function SwapCard() {
       return null;
     }
   }, [route, byAddr]);
+
+  // 0) Apply URL-provided params once after tokens hydrate
+  useEffect(() => {
+    if (didInitFromUrl.current) return;
+    if (!tokens.length) return;
+
+    if (initialTokenIn) setTokenIn(initialTokenIn);
+    if (initialTokenOut) setTokenOut(initialTokenOut);
+    if (Number.isFinite(initialFee)) setFee(initialFee as number);
+
+    if (typeof initialAmountIn === "string" && initialAmountIn.trim() !== "") {
+      setAmountIn(initialAmountIn);
+    }
+
+    didInitFromUrl.current = true;
+  }, [
+    tokens.length,
+    initialTokenIn,
+    initialTokenOut,
+    initialFee,
+    initialAmountIn,
+  ]);
 
   // 1) Choose sane defaults once tokens load
   useEffect(() => {
@@ -385,7 +433,7 @@ export default function SwapCard() {
             fees: [direct.bestFee],
             viaWeth: false,
           });
-          setFee(direct.bestFee);
+          if (!feeLockedFromUrl.current) setFee(direct.bestFee);
           return;
         }
 
@@ -399,7 +447,7 @@ export default function SwapCard() {
             fees: [viaWeth.bestFee, viaWeth.bestFee],
             viaWeth: true,
           });
-          setFee(viaWeth.bestFee);
+          if (!feeLockedFromUrl.current) setFee(viaWeth.bestFee);
           return;
         }
 

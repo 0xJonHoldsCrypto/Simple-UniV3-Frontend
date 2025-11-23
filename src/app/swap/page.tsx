@@ -28,18 +28,12 @@ export default function Page({
       ? searchParams.amountIn
       : undefined;
 
-  const chainId =
-    typeof searchParams?.chainId === "string"
-      ? Number(searchParams.chainId)
-      : undefined;
-
   return (
     <SwapCard
       initialTokenIn={tokenIn}
       initialTokenOut={tokenOut}
       initialFee={Number.isFinite(fee) ? fee : undefined}
       initialAmountIn={amountIn}
-      initialChainId={Number.isFinite(chainId) ? chainId : undefined}
     />
   );
 }
