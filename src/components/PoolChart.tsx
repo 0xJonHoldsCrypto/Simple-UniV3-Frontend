@@ -55,9 +55,13 @@ export function PoolChart({
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
-      priceScaleId: "",
-      scaleMargins: { top: 0.8, bottom: 0 },
+      priceScaleId: "volume",
       lastValueVisible: false,
+    });
+
+    // Configure the custom volume price scale margins separately (not a series option).
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
     });
 
     const sorted = [...ohlcv]

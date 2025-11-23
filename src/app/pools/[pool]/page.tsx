@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import type { Address } from "viem";
-import { formatUnits } from "viem";
+import { decodeEventLog, formatUnits } from "viem";
 import { useAccount, useBalance, usePublicClient } from "wagmi";
 
 import { useTokens } from "@/state/useTokens";
@@ -297,6 +297,49 @@ const poolAbi = [
       { name: "feeProtocol", type: "uint8" },
       { name: "unlocked", type: "bool" },
     ],
+  },
+] as const;
+
+const poolEventsAbi = [
+  {
+    type: "event",
+    name: "Mint",
+    inputs: [
+      { indexed: true, name: "sender", type: "address" },
+      { indexed: true, name: "owner", type: "address" },
+      { indexed: false, name: "tickLower", type: "int24" },
+      { indexed: false, name: "tickUpper", type: "int24" },
+      { indexed: false, name: "amount", type: "uint128" },
+      { indexed: false, name: "amount0", type: "uint256" },
+      { indexed: false, name: "amount1", type: "uint256" },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "Burn",
+    inputs: [
+      { indexed: true, name: "owner", type: "address" },
+      { indexed: false, name: "tickLower", type: "int24" },
+      { indexed: false, name: "tickUpper", type: "int24" },
+      { indexed: false, name: "amount", type: "uint128" },
+      { indexed: false, name: "amount0", type: "uint256" },
+      { indexed: false, name: "amount1", type: "uint256" },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "Collect",
+    inputs: [
+      { indexed: true, name: "owner", type: "address" },
+      { indexed: true, name: "recipient", type: "address" },
+      { indexed: false, name: "tickLower", type: "int24" },
+      { indexed: false, name: "tickUpper", type: "int24" },
+      { indexed: false, name: "amount0", type: "uint128" },
+      { indexed: false, name: "amount1", type: "uint128" },
+    ],
+    anonymous: false,
   },
 ] as const;
 
@@ -809,7 +852,12 @@ export default function PoolPage() {
             )}
 
             {activeTab === "liquidity" && (
-              <LiquidityPanel poolAddress={poolAddress} state={state} />
+              <LiquidityPanel
+                poolAddress={poolAddress}
+                state={state}
+                meta0={meta0}
+                meta1={meta1}
+              />
             )}
 
             {activeTab === "positions" && (
@@ -1316,17 +1364,239 @@ function SwapsPanel({
 function LiquidityPanel({
   poolAddress,
   state,
+  meta0,
+  meta1,
 }: {
   poolAddress: Address;
   state: PoolState | null;
+  meta0?: any;
+  meta1?: any;
 }) {
+  const publicClient = usePublicClient();
+  const [rows, setRows] = useState<
+    Array<{
+      type: "Mint" | "Burn" | "Collect";
+      blockNumber: bigint;
+      txHash: string;
+      owner?: string;
+      tickLower?: number;
+      tickUpper?: number;
+      amount0?: bigint;
+      amount1?: bigint;
+      timestamp?: number;
+    }>
+  >([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!publicClient || !poolAddress) return;
+
+    (async () => {
+      try {
+        setLoading(true);
+        setErr(null);
+
+        const latest = await publicClient.getBlockNumber();
+        const fromBlock = latest > 5000n ? latest - 5000n : 0n;
+
+        const logs = await publicClient.getLogs({
+          address: poolAddress,
+          fromBlock,
+          toBlock: latest,
+        });
+
+        const decoded: typeof rows = [];
+        for (const log of logs) {
+          try {
+            const ev = decodeEventLog({
+              abi: poolEventsAbi,
+              data: log.data,
+              topics: log.topics,
+            });
+
+            const name = ev.eventName as any;
+            if (name !== "Mint" && name !== "Burn" && name !== "Collect")
+              continue;
+
+            const args: any = ev.args ?? {};
+            decoded.push({
+              type: name,
+              blockNumber: log.blockNumber ?? 0n,
+              txHash: log.transactionHash ?? "",
+              owner: args.owner ?? args.sender,
+              tickLower:
+                args.tickLower != null ? Number(args.tickLower) : undefined,
+              tickUpper:
+                args.tickUpper != null ? Number(args.tickUpper) : undefined,
+              amount0: args.amount0 != null ? BigInt(args.amount0) : undefined,
+              amount1: args.amount1 != null ? BigInt(args.amount1) : undefined,
+            });
+          } catch {
+            // ignore non-pool events
+          }
+        }
+
+        decoded.sort((a, b) => Number(b.blockNumber - a.blockNumber));
+        const top = decoded.slice(0, 20);
+
+        const uniqBlocks = Array.from(new Set(top.map((r) => r.blockNumber)));
+        const blockMap = new Map<bigint, number>();
+        await Promise.all(
+          uniqBlocks.map(async (bn) => {
+            try {
+              const b = await publicClient.getBlock({ blockNumber: bn });
+              blockMap.set(bn, Number(b.timestamp) * 1000);
+            } catch {}
+          })
+        );
+        top.forEach((r) => (r.timestamp = blockMap.get(r.blockNumber)));
+
+        if (!active) return;
+        setRows(top);
+      } catch (e: any) {
+        if (!active) return;
+        setErr(e?.message || "Failed to load pool liquidity events");
+        setRows([]);
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [publicClient, poolAddress]);
+
+  const sym0 = meta0?.symbol ?? "Token0";
+  const sym1 = meta1?.symbol ?? "Token1";
+  const dec0 = Number(meta0?.decimals ?? 18);
+  const dec1 = Number(meta1?.decimals ?? 18);
+
+  function relTime(ms?: number) {
+    if (!ms) return "—";
+    const diffSec = Math.floor((Date.now() - ms) / 1000);
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    const abs = Math.abs(diffSec);
+    if (abs < 60) return rtf.format(-diffSec, "second");
+    const diffMin = Math.floor(diffSec / 60);
+    if (Math.abs(diffMin) < 60) return rtf.format(-diffMin, "minute");
+    const diffHr = Math.floor(diffMin / 60);
+    if (Math.abs(diffHr) < 24) return rtf.format(-diffHr, "hour");
+    const diffDay = Math.floor(diffHr / 24);
+    return rtf.format(-diffDay, "day");
+  }
+
   return (
-    <div className="text-sm text-neutral-400 space-y-2">
-      <div>MVP: show recent Mint/Burn/Collect events for this pool.</div>
-      <div className="text-xs opacity-70">
-        Pool: {shortAddr(poolAddress)} · Fee:{" "}
-        {state ? feeLabel(state.fee) : "—"}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-xs text-neutral-400">
+        <div>Recent liquidity events (Mint / Burn / Collect)</div>
+        <div>
+          Pool: {shortAddr(poolAddress)} · Fee:{" "}
+          {state ? feeLabel(state.fee) : "—"}
+        </div>
       </div>
+
+      {loading && (
+        <div className="text-sm text-neutral-400">Loading events…</div>
+      )}
+      {err && <div className="text-xs text-red-400">{err}</div>}
+
+      {!loading && rows.length === 0 && !err && (
+        <div className="text-sm text-neutral-400">
+          No recent liquidity events found.
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-neutral-400">
+              <tr className="border-b border-neutral-800">
+                <th className="text-left py-2 pr-2">Time</th>
+                <th className="text-left py-2 pr-2">Type</th>
+                <th className="text-right py-2 px-2">{sym0}</th>
+                <th className="text-right py-2 px-2">{sym1}</th>
+                <th className="text-right py-2 px-2">Ticks</th>
+                <th className="text-right py-2 pl-2">Owner</th>
+                <th className="text-right py-2 pl-2">Tx</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const amt0 =
+                  r.amount0 != null
+                    ? Number(formatUnits(r.amount0, dec0))
+                    : null;
+                const amt1 =
+                  r.amount1 != null
+                    ? Number(formatUnits(r.amount1, dec1))
+                    : null;
+                const ticks =
+                  r.tickLower != null && r.tickUpper != null
+                    ? `${r.tickLower} → ${r.tickUpper}`
+                    : "—";
+
+                return (
+                  <tr
+                    key={`${r.txHash}-${i}`}
+                    className="border-b border-neutral-900/80 hover:bg-neutral-950/40"
+                  >
+                    <td
+                      className="py-2 pr-2 whitespace-nowrap"
+                      title={
+                        r.timestamp
+                          ? new Date(r.timestamp).toLocaleString()
+                          : undefined
+                      }
+                    >
+                      {relTime(r.timestamp)}
+                    </td>
+                    <td className="py-2 pr-2 font-semibold text-neutral-200">
+                      {r.type}
+                    </td>
+                    <td className="py-2 px-2 text-right">
+                      {amt0 != null && Number.isFinite(amt0)
+                        ? amt0.toLocaleString(undefined, {
+                            maximumFractionDigits: 6,
+                          })
+                        : "—"}
+                    </td>
+                    <td className="py-2 px-2 text-right">
+                      {amt1 != null && Number.isFinite(amt1)
+                        ? amt1.toLocaleString(undefined, {
+                            maximumFractionDigits: 6,
+                          })
+                        : "—"}
+                    </td>
+                    <td className="py-2 px-2 text-right text-neutral-300 whitespace-nowrap">
+                      {ticks}
+                    </td>
+                    <td className="py-2 pl-2 text-right font-mono text-[11px] text-neutral-400">
+                      {r.owner ? shortAddr(r.owner) : "—"}
+                    </td>
+                    <td className="py-2 pl-2 text-right">
+                      {r.txHash ? (
+                        <a
+                          href={`https://explorer.hemi.xyz/tx/${r.txHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline opacity-70 hover:opacity-100"
+                        >
+                          View
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
